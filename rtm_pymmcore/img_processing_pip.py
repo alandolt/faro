@@ -156,12 +156,9 @@ class ImageProcessingPipeline:
         fov_obj.tracks_queue.put(df_tracked)
 
         if not df_tracked.empty:
-            try:
-                df_tracked = df_tracked.drop("fov_object", axis=1)
-                df_tracked = df_tracked.drop("img_type", axis=1)
-                df_tracked = df_tracked.drop("last_channel", axis=1)
-            except KeyError:
-                pass
+            df_tracked = df_tracked.drop(
+                columns=["fov_object", "img_type", "last_channel"], errors="ignore"
+            )
 
         df_datatypes = {
             "timestep": np.uint32,

@@ -20,7 +20,7 @@ STIM_FOLDER = "stim"
 MASK_FOLDER = "mask"
 LIGHT_MASK_FOLDER = "light_mask"
 PARTICLES_FOLDER = "particles"
-LABELS_RINGS = "labels_rings"
+LABELS_RINGS = "labels_ring"
 TRACKS_FOLDER = "tracks"
 
 DEFAULT_FOLDER = "\\\\izbkingston.izb.unibe.ch\\imaging.data\\mic01-imaging\\Cedric\\experimental_data"
