@@ -94,7 +94,12 @@ class DMD:
             axis=0
         ) % 2
         checker_board = checker_board.astype(np.uint8) * 255
-        self.display_mask(checker_board)
+        event = MDAEvent(
+            slm_image=SLMImage(data=checker_board))
+        self.mmc.mda.events.frameReady.disconnect()
+        self.mmc.mda.run([event])
+        
+
 
     def select_well_distributed_points(self, valid_pixels, n_points):
         """
