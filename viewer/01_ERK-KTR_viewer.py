@@ -583,12 +583,97 @@ from qtpy.QtWidgets import (
     QLabel,
     QComboBox,
     QPushButton,
+    QToolBar,
+    QAction,
 )
+from qtpy.QtCore import Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import matplotlib.pyplot as plt
 from qtpy.QtCore import QTimer
 import csv
+
+
+class VerticalNavigationToolbar(QToolBar):
+    """Custom vertical navigation toolbar for matplotlib canvas"""
+
+    def __init__(self, canvas, parent=None):
+        super().__init__(parent)
+        self.canvas = canvas
+        self.setOrientation(Qt.Vertical)
+        self.setToolButtonStyle(Qt.ToolButtonIconOnly)
+
+        # Get the standard navigation toolbar to extract actions
+        self._nav_toolbar = NavigationToolbar(canvas, self)
+        self._nav_toolbar.hide()  # Hide the original toolbar
+
+        # Create vertical actions based on the standard toolbar
+        self._create_actions()
+
+        # Track navigation state
+        self.mode = ""
+
+    def _create_actions(self):
+        """Create vertical toolbar actions"""
+        # Home action
+        home_action = QAction("🏠", self)
+        home_action.setToolTip("Reset original view")
+        home_action.triggered.connect(self._nav_toolbar.home)
+        self.addAction(home_action)
+
+        self.addSeparator()
+
+        # Pan action
+        pan_action = QAction("✋", self)
+        pan_action.setToolTip("Pan axes with left mouse, zoom with right")
+        pan_action.setCheckable(True)
+        pan_action.triggered.connect(lambda checked: self._toggle_mode("pan", checked))
+        self.addAction(pan_action)
+        self._pan_action = pan_action
+
+        # Zoom action
+        zoom_action = QAction("🔍", self)
+        zoom_action.setToolTip("Zoom to rectangle")
+        zoom_action.setCheckable(True)
+        zoom_action.triggered.connect(
+            lambda checked: self._toggle_mode("zoom", checked)
+        )
+        self.addAction(zoom_action)
+        self._zoom_action = zoom_action
+
+        self.addSeparator()
+
+        # Back action
+        back_action = QAction("⬅", self)
+        back_action.setToolTip("Back to previous view")
+        back_action.triggered.connect(self._nav_toolbar.back)
+        self.addAction(back_action)
+
+        # Forward action
+        forward_action = QAction("➡", self)
+        forward_action.setToolTip("Forward to next view")
+        forward_action.triggered.connect(self._nav_toolbar.forward)
+        self.addAction(forward_action)
+
+    def _toggle_mode(self, mode, checked):
+        """Toggle between pan/zoom modes"""
+        if checked:
+            # Uncheck other modes
+            if mode == "pan":
+                self._zoom_action.setChecked(False)
+                self._nav_toolbar.pan()
+                self.mode = "pan"
+            elif mode == "zoom":
+                self._pan_action.setChecked(False)
+                self._nav_toolbar.zoom()
+                self.mode = "zoom"
+        else:
+            # Deactivate current mode
+            if mode == "pan":
+                self._nav_toolbar.pan()
+            elif mode == "zoom":
+                self._nav_toolbar.zoom()
+            self.mode = ""
 
 
 class CellTimeSeriesWidget(QWidget):
@@ -619,17 +704,21 @@ class CellTimeSeriesWidget(QWidget):
         control_layout.addWidget(self.delete_btn)
         control_layout.addStretch()
 
-        # Plot rechts
-        plot_layout = QVBoxLayout()
+        # Plot rechts mit vertikaler Toolbar links
+        plot_layout = QHBoxLayout()
         plot_widget = QWidget()
         plot_widget.setLayout(plot_layout)
+
+        # Matplotlib setup
         self.fig, self.ax = plt.subplots()
         self.canvas = FigureCanvas(self.fig)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        
-        # Navigation toolbar for zoom/pan controls
-        self.toolbar = NavigationToolbar(self.canvas, self)
-        
+
+        # Vertical navigation toolbar
+        self.toolbar = VerticalNavigationToolbar(self.canvas, self)
+        self.toolbar.setFixedWidth(40)  # Schmale Toolbar
+
+        # Plot layout: toolbar links, canvas rechts
         plot_layout.addWidget(self.toolbar)
         plot_layout.addWidget(self.canvas)
 
@@ -794,10 +883,10 @@ class CellTimeSeriesWidget(QWidget):
     def on_pick(self, event):
         try:
             # Check if navigation toolbar is in zoom/pan mode
-            if hasattr(self, 'toolbar') and self.toolbar.mode != '':
+            if hasattr(self, "toolbar") and self.toolbar.mode != "":
                 # Don't process pick events when zooming/panning
                 return
-                
+
             # Robustes Picking für überlappende Linien
             found_particle = None
 
