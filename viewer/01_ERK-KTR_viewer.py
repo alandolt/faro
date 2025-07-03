@@ -585,6 +585,7 @@ from qtpy.QtWidgets import (
     QPushButton,
 )
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import matplotlib.pyplot as plt
 from qtpy.QtCore import QTimer
 import csv
@@ -625,6 +626,11 @@ class CellTimeSeriesWidget(QWidget):
         self.fig, self.ax = plt.subplots()
         self.canvas = FigureCanvas(self.fig)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # Navigation toolbar for zoom/pan controls
+        self.toolbar = NavigationToolbar(self.canvas, self)
+        
+        plot_layout.addWidget(self.toolbar)
         plot_layout.addWidget(self.canvas)
 
         # Layouts zusammenfügen
@@ -787,6 +793,11 @@ class CellTimeSeriesWidget(QWidget):
 
     def on_pick(self, event):
         try:
+            # Check if navigation toolbar is in zoom/pan mode
+            if hasattr(self, 'toolbar') and self.toolbar.mode != '':
+                # Don't process pick events when zooming/panning
+                return
+                
             # Robustes Picking für überlappende Linien
             found_particle = None
 
