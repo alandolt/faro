@@ -1,5 +1,7 @@
 from pymmcore_plus import CMMCorePlus
-from rtm_pymmcore.img_processing_pip import store_img, ImageProcessingPipeline
+from rtm_pymmcore.img_proc_pipeline.base_image_processing_pipeline import (
+    BaseImageProcessingPipeline,
+)
 from rtm_pymmcore.data_structures import Fov, ImgType
 from rtm_pymmcore.dmd import DMD
 
@@ -20,7 +22,7 @@ import os
 class Analyzer:
     """When a new image is acquired, decide what to do here. Segment, get stim mask, just store"""
 
-    def __init__(self, pipeline: ImageProcessingPipeline = None):
+    def __init__(self, pipeline: BaseImageProcessingPipeline = None):
         self.pipeline = pipeline
 
     def run(self, img: np.array, event: MDAEvent) -> dict:
@@ -36,7 +38,7 @@ class Analyzer:
 
         elif img_type == ImgType.IMG_STIM:
             # stim image, store
-            store_img(img, metadata, self.pipeline.storage_path, "stim")
+            self.pipeline.store_img(img, metadata, self.pipeline.storage_path, "stim")
 
         elif img_type == ImgType.IMG_OPTOCHECK:
             # on one side store image as normal raw, but also send a copy to optocheck pipeline
@@ -45,10 +47,9 @@ class Analyzer:
             if self.pipeline is not None:
                 thread = threading.Thread(target=self.pipeline.run, args=(img, event))
                 thread.start()
-            store_img(img[0:len_raw_img], metadata, self.pipeline.storage_path, "raw")
-            store_img(img, metadata, self.pipeline.storage_path, "optocheck")
 
         return {"result": "STOP"}
+        pass
 
 
 class Controller:
@@ -116,7 +117,9 @@ class Controller:
                     metadata_dict = dict(row)
                     metadata_dict["img_type"] = ImgType.IMG_RAW
                     metadata_dict["last_channel"] = channels[-1]
-
+                    metadata_dict["max_timestep"] = df_acquire[
+                        df_acquire["fov"] == fov_index
+                    ]["timestep"].max()
                     if "stim" not in df_acquire.columns:
                         stim = False
                         metadata_dict["stim"] = False

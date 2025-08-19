@@ -1604,8 +1604,8 @@ wheels = [
 
 [[package]]
 name = "ome-zarr"
-version = "0.12.0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.1.dev1381+g7370261f2"
+source = { git = "https://github.com/alandolt/ome-zarr-py.git?rev=feature%2Fsequential_writing#7370261f26bbe500574ad288a14b0bb674baadc7" }
 dependencies = [
     { name = "aiohttp" },
     { name = "dask" },
@@ -1615,10 +1615,6 @@ dependencies = [
     { name = "scikit-image" },
     { name = "toolz" },
     { name = "zarr" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/51/eb/d9741f3f3198534a788966779854c05651fc79de72066cbf0d5664e86ccd/ome_zarr-0.12.0.tar.gz", hash = "sha256:a3a47d265e35463ad04b0572776605cff69198ddae971e83a98f1ac4ee5b83e7", size = 69995, upload-time = "2025-08-18T15:14:36.266Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/70/86/3609b8c4deee569cd2d8b9c0a60ab37443a91ec6458212d3b18774b52447/ome_zarr-0.12.0-py3-none-any.whl", hash = "sha256:00fc9308aa77478bb2a650ad1e835eadafd1e99d2ba57d8813f9af9ba03d0193", size = 41463, upload-time = "2025-08-18T15:14:34.918Z" },
 ]
 
 [[package]]
@@ -2448,24 +2444,19 @@ dependencies = [
 
 [package.optional-dependencies]
 stardist = [
-    { name = "csbdeep" },
-    { name = "numpy" },
     { name = "stardist" },
     { name = "tensorflow" },
-    { name = "tensorflow-io-gcs-filesystem" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "csbdeep", marker = "extra == 'stardist'" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "matplotlib" },
     { name = "napari", extras = ["all"] },
     { name = "napari-micromanager" },
     { name = "numpy" },
-    { name = "numpy", marker = "extra == 'stardist'", specifier = "<2.0.0" },
-    { name = "ome-zarr" },
+    { name = "ome-zarr", git = "https://github.com/alandolt/ome-zarr-py.git?rev=feature%2Fsequential_writing" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pymmcore-plus" },
@@ -2473,7 +2464,6 @@ requires-dist = [
     { name = "scikit-image" },
     { name = "stardist", marker = "extra == 'stardist'" },
     { name = "tensorflow", marker = "extra == 'stardist'" },
-    { name = "tensorflow-io-gcs-filesystem", marker = "extra == 'stardist'", specifier = "<=0.31.0" },
     { name = "tifffile" },
     { name = "trackpy" },
 ]
