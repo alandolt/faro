@@ -29,10 +29,10 @@ class Analyzer:
 
         if img_type == ImgType.IMG_RAW:
             # raw image, send to pipeline and store
+            store_img(img, metadata, self.pipeline.storage_path, "raw")
             if self.pipeline is not None:
                 thread = threading.Thread(target=self.pipeline.run, args=(img, event))
                 thread.start()
-            store_img(img, metadata, self.pipeline.storage_path, "raw")
 
         elif img_type == ImgType.IMG_STIM:
             # stim image, store
@@ -97,6 +97,9 @@ class Controller:
                 # extract the lines with the current timestep from the DF
                 current_time_df = df_acquire[df_acquire["time"] == exp_time]
                 for index, row in current_time_df.iterrows():
+                    # Pause if queue is getting too full to allow analyzer to catch up
+                    while self._queue.qsize() >= 5:
+                        time.sleep(1)  # Wait 1s before checking again
                     # Get FOV data directly from the DataFrame
                     timestep = row["timestep"]
                     fov_obj = row["fov_object"]
