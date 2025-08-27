@@ -104,10 +104,11 @@ class ImageProcessingPipeline:
         shape_img = (img.shape[-2], img.shape[-1])
 
         segmentation_results = {}
-        for seg in self.segmentators:
-            segmentation_results[seg["name"]] = seg["class"].segment(
-                img[seg["use_channel"], :, :]
-            )
+        if self.segmentators is not None:
+            for seg in self.segmentators:
+                segmentation_results[seg["name"]] = seg["class"].segment(
+                    img[seg["use_channel"], :, :]
+                )
 
         if metadata["stim"] == True:
             stim_mask, labels_stim = self.stimulator.get_stim_mask(
@@ -238,7 +239,7 @@ class ImageProcessingPipeline_postExperiment:
         tracker: abstract_tracker.Tracker = None,
         feature_extractor_optocheck: abstract_fe.FeatureExtractor = None,
         use_old_segmentations: bool = False,
-        n_jobs: int = 2
+        n_jobs: int = 2,
     ):
         self.segmentators = segmentators
         self.feature_extractor = feature_extractor
@@ -296,7 +297,7 @@ class ImageProcessingPipeline_postExperiment:
             metadata = row.to_dict()
             shape_img = (img.shape[-2], img.shape[-1])
             segmentation_results = {}
-            if self.use_old_segmentations: 
+            if self.use_old_segmentations:
                 for seg in self.segmentators:
                     segmentation_results[seg["name"]] = tifffile.imread(
                         os.path.join(
