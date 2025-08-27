@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-omeyzarr = [
+ome_zarr = [
     "ome-zarr",
     ]
 
@@ -29,6 +29,20 @@ stardist = [
     "stardist",
     "tensorflow",
     ]
+
 cellpose = [
     "cellpose",
+    "torch",
     ]
+
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu128", extra = "cellpose" },
+]
+
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
