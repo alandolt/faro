@@ -4,15 +4,15 @@ from rtm_pymmcore.controller import Controller, Analyzer
 
 
 class Jungfrau(AbstractMicroscope):
-    MICROMANAGER_PATH = "D:\\Program Files\\Micro-Manager-2.0_n"
-    MICROMANAGER_CONFIG = "E:\\pertzlab_mic_configs\\micromanager\\\Jungfrau\\TiFluoroJungfrau_w_TTL_DIGITALIO.cfg"
+    MICROMANAGER_PATH = "C:\\Program Files\\Micro-Manager-2.0_api74"
+    MICROMANAGER_CONFIG = "E:\\pertzlab_mic_configs\\micromanager\\Jungfrau\\TiFluoroJungfrau_w_TTL_DIGITALIO.cfg"
     USE_AUTOFOCUS_EVENT = False
     USE_ONLY_PFS = True
 
     def __init__(self):
         super().__init__()
         pymmcore_plus.use_micromanager(self.MICROMANAGER_PATH)
-        self.mmc = pymmcore_plus.CMMCorePlus()
+        self.mmc = pymmcore_plus.CMMCorePlus(self.MICROMANAGER_PATH)
         self.init_scope()
 
     def init_scope(self):
