@@ -46,6 +46,10 @@ class Analyzer:
                 thread = threading.Thread(target=self.pipeline.run, args=(img, event))
                 thread.start()
             store_img(img[0:len_raw_img], metadata, self.pipeline.storage_path, "raw")
+            if not os.path.exists(
+                os.path.join(self.pipeline.storage_path, "optocheck")
+            ):
+                os.makedirs(os.path.join(self.pipeline.storage_path, "optocheck"))
             store_img(img, metadata, self.pipeline.storage_path, "optocheck")
 
         return {"result": "STOP"}
