@@ -71,7 +71,7 @@ class KeepDMDAlive:
 
 
 class Moench(AbstractMicroscope):
-    MICROMANAGER_PATH = "C:\\micromanager_rtm_pymmcore\\Micro-Manager-2.0_n"
+    MICROMANAGER_PATH = "C:\\micromanager_rtm_pymmcore\\Micro-Manager-2.0_api74"
     MICROMANAGER_CONFIG = "C:\\micromanager_rtm_pymmcore\\pertzlab_mic_configs\\micromanager\\Moench\\TiMoench_w_TTL_PrimeBSI.cfg"
     USE_AUTOFOCUS_EVENT = False
     USE_ONLY_PFS = True
@@ -84,11 +84,16 @@ class Moench(AbstractMicroscope):
         "property_name": "Cyan_Level",
         "power": 100,
     }
+    ROI_X = 0
+    ROI_Y = 60
+    ROI_WIDTH = 800
+    ROI_HEIGHT = 800
+    SET_ROI_REQUIRED = True
 
     def __init__(self, affine_calibration_matrix=None):
         super().__init__()
         pymmcore_plus.use_micromanager(self.MICROMANAGER_PATH)
-        self.mmc = pymmcore_plus.CMMCorePlus()
+        self.mmc = pymmcore_plus.CMMCorePlus(mm_path=self.MICROMANAGER_PATH)
         self.slm_dev = None
         self.slm_width = None
         self.slm_height = None
@@ -118,7 +123,6 @@ class Moench(AbstractMicroscope):
         # self.mmc.setROI(50, 250, self.image_width - 50 - 24, self.image_height - 250 - 24) # roi setting for andor zyla
         # roi for prime bsi
         # mic.mmc.setROI(0, 50, 900, 700) # would be possible, rectangular image
-        # self.mmc.setROI(100, 50, 750, 700)
 
     def calibrate_dmd(self):
         "Calibrate the DMD if it is not already calibrated." ""
@@ -130,6 +134,7 @@ class Moench(AbstractMicroscope):
     def run_experiment(self, df_acquire):
         """Run the experiment."""
         self.wakeup_dmd.stop()
+        time.sleep(2)
         self.analyzer = Analyzer(self.pipeline)
         self.controller = Controller(
             self.analyzer,
@@ -141,6 +146,10 @@ class Moench(AbstractMicroscope):
         )
         pymmcore_plus.configure_logging(stderr_level="WARNING")
         self.controller.run(df_acquire)
+
+    def set_roi(self):
+        self.mmc.clearROI()
+        self.mmc.setROI(self.ROI_X, self.ROI_Y, self.ROI_WIDTH, self.ROI_HEIGHT)
 
     def post_experiment(self):
         """Post-process the experiment."""
