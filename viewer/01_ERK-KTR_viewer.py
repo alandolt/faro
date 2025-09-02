@@ -93,6 +93,8 @@ def load_exp_df(project_path):
                     exp_df[col] = exp_df.apply(
                         lambda row: row[base] / mean_cnr.get(row["uid"], 1), axis=1
                     )
+        # Note: Throughout the application, we filter out entries where stim_exposure is NA
+        # to avoid issues with missing stimulation exposure data
 
 
 def get_cell_lines() -> List[str]:
@@ -101,20 +103,21 @@ def get_cell_lines() -> List[str]:
 
 
 def get_exposure_times(cell_line: str) -> List[int]:
-    exposure_times = (
-        exp_df[exp_df["cell_line"] == cell_line]["stim_exposure"]
-        .unique()
-        .astype(int)
-        .tolist()
+    # Filter out NA values in stim_exposure
+    filtered_df = exp_df[exp_df["cell_line"] == cell_line].dropna(
+        subset=["stim_exposure"]
     )
+    exposure_times = filtered_df["stim_exposure"].unique().astype(int).tolist()
     return sorted(exposure_times)
 
 
 def get_stim_timesteps(cell_line: str, stim_exposure: int) -> List[str]:
+    # Filter out NA values in stim_exposure
+    filtered_df = exp_df.dropna(subset=["stim_exposure"])
     stim_timesteps = (
-        exp_df[
-            (exp_df["cell_line"] == cell_line)
-            & (exp_df["stim_exposure"] == stim_exposure)
+        filtered_df[
+            (filtered_df["cell_line"] == cell_line)
+            & (filtered_df["stim_exposure"] == stim_exposure)
         ]["stim_timestep"]
         .unique()
         .tolist()
@@ -127,11 +130,13 @@ def get_stim_timesteps(cell_line: str, stim_exposure: int) -> List[str]:
 
 
 def get_fov_choices(cell_line: str, stim_exposure: int, stim_timestep) -> List[str]:
+    # Filter out NA values in stim_exposure
+    filtered_df = exp_df.dropna(subset=["stim_exposure"])
     return (
-        exp_df[
-            (exp_df["cell_line"] == cell_line)
-            & (exp_df["stim_exposure"] == stim_exposure)
-            & (exp_df["stim_timestep"] == stim_timestep)
+        filtered_df[
+            (filtered_df["cell_line"] == cell_line)
+            & (filtered_df["stim_exposure"] == stim_exposure)
+            & (filtered_df["stim_timestep"] == stim_timestep)
         ]["fov"]
         .unique()
         .tolist()
@@ -253,9 +258,11 @@ def selection_widget(
         filter_parts.append("fov == @fov")
     if filter_parts:
         query_str = " and ".join(filter_parts)
-        filtered_df = exp_df.query(query_str)
+        # Filter out NA values in stim_exposure before applying the query
+        filtered_df = exp_df.dropna(subset=["stim_exposure"]).query(query_str)
     else:
-        filtered_df = exp_df
+        # Filter out NA values in stim_exposure
+        filtered_df = exp_df.dropna(subset=["stim_exposure"])
 
     filenames = filtered_df["fname"].unique().tolist()
 
@@ -368,6 +375,8 @@ def selection_widget(
 
 def set_next(value):
     global current_fov
+    # Filter out NA values in stim_exposure
+    filtered_exp_df = exp_df.dropna(subset=["stim_exposure"])
     fov_choices = get_fov_choices(
         current_cell_line, current_exposure_time, current_stim_timestep
     )
@@ -387,6 +396,8 @@ def set_next(value):
 
 def set_previous(value):
     global current_fov
+    # Filter out NA values in stim_exposure
+    filtered_exp_df = exp_df.dropna(subset=["stim_exposure"])
     fov_choices = get_fov_choices(
         current_cell_line, current_exposure_time, current_stim_timestep
     )
@@ -414,9 +425,15 @@ def update_exposure_times(event=None):
     if selection_widget.exposure_time.value in exposure_times:
         selection_widget.exposure_time.value = selection_widget.exposure_time.value
     else:
-        selection_widget.exposure_time.value = (
-            exposure_times[0] if exposure_times else None
-        )
+        if exposure_times:
+            selection_widget.exposure_time.value = exposure_times[0]
+        else:
+            # Wenn keine exposure_times vorhanden, setze auf None aber nur wenn erlaubt
+            try:
+                selection_widget.exposure_time.value = None
+            except ValueError:
+                # Wenn None nicht erlaubt ist, lasse den aktuellen Wert
+                pass
 
     update_stim_timesteps()
 
@@ -426,6 +443,19 @@ def update_stim_timesteps(event=None):
         selection_widget.cell_line.value, selection_widget.exposure_time.value
     )
     selection_widget.stim_timestep.choices = stim_timepoints
+
+    if selection_widget.stim_timestep.value in stim_timepoints["choices"]:
+        selection_widget.stim_timestep.value = selection_widget.stim_timestep.value
+    else:
+        if stim_timepoints["choices"]:
+            selection_widget.stim_timestep.value = stim_timepoints["choices"][0]
+        else:
+            # Wenn keine stim_timesteps vorhanden, setze auf None aber nur wenn erlaubt
+            try:
+                selection_widget.stim_timestep.value = None
+            except ValueError:
+                # Wenn None nicht erlaubt ist, lasse den aktuellen Wert
+                pass
 
     update_fov()
 
@@ -444,7 +474,15 @@ def update_fov(event=None):
     if selection_widget.fov.value in fov_choices:
         selection_widget.fov.value = selection_widget.fov.value
     else:
-        selection_widget.fov.value = fov_choices[0] if fov_choices else None
+        if fov_choices:
+            selection_widget.fov.value = fov_choices[0]
+        else:
+            # Wenn keine fovs vorhanden, setze auf None aber nur wenn erlaubt
+            try:
+                selection_widget.fov.value = None
+            except ValueError:
+                # Wenn None nicht erlaubt ist, lasse den aktuellen Wert
+                pass
 
 
 # widget to choose the directory
@@ -501,7 +539,9 @@ def label_to_value(tracks, labels_stack, what, no_normalization=False):
     auto_call=True,
 )
 def add_cnr_overlay(next_fov: bool = False):
-    exp_df_current_fov = exp_df.query(
+    # Filter out NA values in stim_exposure
+    filtered_exp_df = exp_df.dropna(subset=["stim_exposure"])
+    exp_df_current_fov = filtered_exp_df.query(
         "cell_line == @current_cell_line and stim_exposure == @current_exposure_time and fov == @current_fov"
     ).copy()
     if not exp_df_current_fov.columns.str.contains("CNr").any():
@@ -538,7 +578,9 @@ def add_cnr_overlay(next_fov: bool = False):
     auto_call=True,
 )
 def add_optocheck_overlay(next_fov: bool = False):
-    exp_df_current_fov = exp_df.query(
+    # Filter out NA values in stim_exposure
+    filtered_exp_df = exp_df.dropna(subset=["stim_exposure"])
+    exp_df_current_fov = filtered_exp_df.query(
         "cell_line == @current_cell_line and stim_exposure == @current_exposure_time and fov == @current_fov"
     ).copy()
 
@@ -1388,8 +1430,9 @@ def update_cell_time_series_widget():
             return
 
         y_col = cell_time_series_widget.combo.currentText()
-        # Daten filtern
-        exp_df_filtered = exp_df[exp_df["fov"] == current_fov].copy()
+        # Daten filtern und NA values in stim_exposure ausschließen
+        exp_df_filtered = exp_df.dropna(subset=["stim_exposure"])
+        exp_df_filtered = exp_df_filtered[exp_df_filtered["fov"] == current_fov].copy()
 
         # UID-Spalte hinzufügen, falls nicht vorhanden
         if "uid" not in exp_df_filtered.columns:
