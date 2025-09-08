@@ -1,6 +1,7 @@
 import os
 from rtm_pymmcore.dmd import DMD
 from queue import Queue
+import pymmcore_plus
 
 
 class AbstractMicroscope:
@@ -12,6 +13,12 @@ class AbstractMicroscope:
     )
 
     def __init__(self):
+        pymmcore_plus.configure_logging(
+            stderr_level="CRITICAL",
+            file_level="CRITICAL",
+            file_rotation=160,
+            file_retention=1,
+        )
         self.dmd = None
         self.queue = Queue()
         self.pipeline = None

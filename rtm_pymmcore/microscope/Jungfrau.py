@@ -26,7 +26,6 @@ class Jungfrau(AbstractMicroscope):
         self.controller = Controller(
             self.analyzer, self.mmc, self.queue, self.USE_AUTOFOCUS_EVENT
         )
-        pymmcore_plus.configure_logging(stderr_level="WARNING")
         self.controller.run(df_acquire)
 
     def post_experiment(self):
