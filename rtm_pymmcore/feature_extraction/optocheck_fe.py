@@ -44,21 +44,14 @@ class OptoCheckFE(FeatureExtractorOptoCheck):
                 df_tracked["optocheck_mean_intensity"] = np.nan
             table["timestep"] = metadata["timestep"]
             table["fov"] = metadata["fov"]
-            df_tracked = df_tracked.set_index(["particle", "timestep", "fov"])
-            table = table.set_index(["particle", "timestep", "fov"])
-            # Use merge on index for faster update
-            df_tracked = df_tracked.merge(
-                table,
-                left_index=True,
-                right_index=True,
-                how="left",
-                suffixes=("", "_new"),
+            # Update only matching particle/timestep/fov combinations
+            mask = (
+                (df_tracked["particle"].isin(table["particle"]))
+                & (df_tracked["timestep"] == metadata["timestep"])
+                & (df_tracked["fov"] == metadata["fov"])
             )
-            if "optocheck_mean_intensity_new" in df_tracked.columns:
-                df_tracked["optocheck_mean_intensity"] = df_tracked[
-                    "optocheck_mean_intensity"
-                ].fillna(df_tracked["optocheck_mean_intensity_new"])
-                df_tracked = df_tracked.drop(columns=["optocheck_mean_intensity_new"])
-            df_tracked = df_tracked.reset_index()
+            df_tracked.loc[mask, "optocheck_mean_intensity"] = df_tracked.loc[
+                mask, "particle"
+            ].map(table.set_index("particle")["optocheck_mean_intensity"])
 
         return df_tracked

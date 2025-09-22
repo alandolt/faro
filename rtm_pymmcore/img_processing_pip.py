@@ -88,7 +88,6 @@ class ImageProcessingPipeline:
         # Rest of the code...
 
         metadata = event.metadata
-
         fov_obj: Fov = metadata["fov_object"]
         if metadata["timestep"] > 0:
             df_old = fov_obj.tracks_queue.get(block=True, timeout=360)
@@ -296,31 +295,42 @@ class ImageProcessingPipeline_postExperiment:
     def run_on_fov(self, fov_id) -> dict:
         df = (
             self.df_acquire.query("fov ==  @fov_id")
-            .drop_duplicates(subset=["fname"])[
-                self.df_acquire.columns[self.df_acquire.columns.get_loc("fov") + 1 :]
-            ]
+            .drop_duplicates(subset=["fname"])
             .reset_index()
             .copy()
         )
-        if "optocheck_mean_intensity" in df.columns:
-            df = df.drop(columns=["optocheck_mean_intensity"])
-        df_old = pd.DataFrame()
 
+        cell_specific_cols = [
+            c
+            for c in df.columns
+            if c.startswith("mean_intensity_")
+            or c.startswith("median_intensity_")
+            or c.startswith("cnr_")
+            or c.startswith("cnr")
+            or c.startswith("norm_")
+            or c.startswith("mean_")
+            or c in ["x", "y", "area", "label", "particle"]
+            or c.startswith("optocheck_mean_intensity_")
+            or c.startswith("optocheck_median_intensity_")
+        ]
+        if cell_specific_cols:
+            df = df.drop(columns=cell_specific_cols)
+
+        df_old = pd.DataFrame()
         fov_obj = Fov(0)
         df.loc[:, "fov_object"] = fov_obj
         df["fov"] = fov_id
-
         if self.correct_timestep_jumps:
             # ensure missing timesteps are filled for this FOV by backfilling all missing frames
             # e.g. if timestep 176 exists but many earlier timesteps are missing, add 0,1,2,...,175
             all_timesteps = sorted(self.df_acquire["timestep"].unique())
-            if all_timesteps:
-                existing_ts = sorted(df["timestep"].unique())
-                existing_set = set(int(x) for x in existing_ts)
-                # consider the full acquisition range and find missing timesteps
-                full_range = range(int(min(all_timesteps)), int(max(all_timesteps)) + 1)
-                missing_ts = [t for t in full_range if t not in existing_set]
-
+            existing_ts = sorted(df["timestep"].unique())
+            existing_set = set(int(x) for x in existing_ts)
+            # consider the full acquisition range and find missing timesteps
+            full_range = range(int(min(all_timesteps)), int(max(all_timesteps)) + 1)
+            missing_ts = [t for t in full_range if t not in existing_set]
+            if len(missing_ts) > 0:
+                print(f"Backfilling missing timesteps for FOV {fov_id}: {missing_ts}")
                 # representative row per existing timestep (use the row at that timestep as template)
                 rep_rows = {int(r["timestep"]): r for _, r in df.iterrows()}
                 sorted_existing = sorted(rep_rows.keys())
@@ -390,6 +400,28 @@ class ImageProcessingPipeline_postExperiment:
             else:
                 df_tracked = pd.concat([df_old, df_new], ignore_index=True)
             df_old = df_tracked
+
+            if (
+                self.feature_extractor_optocheck is not None
+                and self.tracker is not None
+            ):
+                if metadata["optocheck"] == True:
+                    print(
+                        f'Adding optocheck features for timestep {metadata["timestep"]}, fov {fov_id}'
+                    )
+                    img_optocheck = tifffile.imread(
+                        os.path.join(
+                            self.img_storage_path, "optocheck", row["fname"] + ".tiff"
+                        )
+                    )
+                    n_channels = len(metadata["channels"])
+                    img_optocheck = img_optocheck[n_channels:]
+                    df_tracked = self.feature_extractor_optocheck.extract_features(
+                        segmentation_results,
+                        img_optocheck,
+                        df_tracked,
+                        metadata,
+                    )
 
             if masks_for_fe is not None:
                 for mask_fe in masks_for_fe:
