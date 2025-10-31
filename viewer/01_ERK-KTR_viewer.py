@@ -69,7 +69,24 @@ def load_exp_df(project_path):
     if exp_df is None and os.path.exists(
         os.path.join(project_path, "exp_data.parquet")
     ):
-        exp_df = pd.read_parquet(os.path.join(project_path, "exp_data.parquet"))
+        try:
+            exp_df = pd.read_parquet(
+                os.path.join(project_path, "exp_data.parquet"),
+                columns=[
+                    "cell_line",
+                    "stim_exposure",
+                    "stim_timestep",
+                    "fov",
+                    "fname",
+                    "particle",
+                    "timepoint",
+                    "timestep",
+                    "cnr",
+                    "cnr_median",
+                ],
+            )
+        except ValueError:
+            exp_df = pd.read_parquet(os.path.join(project_path, "exp_data.parquet"))
 
         # Normalize stim_timestep to native Python types (None / int / tuple[int,...])
         def _normalize_timestep(x):
