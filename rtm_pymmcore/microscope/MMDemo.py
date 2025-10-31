@@ -1,6 +1,6 @@
 import pymmcore_plus
 from rtm_pymmcore.microscope.abstract_microscope import AbstractMicroscope
-from rtm_pymmcore.controller import ControllerSimulated, Analyzer
+from rtm_pymmcore.controller import Controller, ControllerSimulated, Analyzer
 import os
 
 
@@ -11,8 +11,8 @@ class MMDemo(AbstractMicroscope):
 
     def __init__(
         self,
-        old_data_project_path: str,
         micromanager_path="C:\\Program Files\\Micro-Manager-2.0",
+        old_data_project_path: str = None,
     ):
         super().__init__()
         self.micromanager_path = micromanager_path
@@ -33,13 +33,21 @@ class MMDemo(AbstractMicroscope):
     def run_experiment(self, df_acquire):
         """Run the experiment."""
         self.analyzer = Analyzer(self.pipeline)
-        self.controller = ControllerSimulated(
-            self.analyzer,
-            self.mmc,
-            self.queue,
-            self.USE_AUTOFOCUS_EVENT,
-            project_path=self.old_data_project_path,
-        )
+        if self.old_data_project_path is not None:
+            print(
+                f"Running in simulated mode with old data from {self.old_data_project_path}"
+            )
+            self.controller = ControllerSimulated(
+                self.analyzer,
+                self.mmc,
+                self.queue,
+                self.USE_AUTOFOCUS_EVENT,
+                project_path=self.old_data_project_path,
+            )
+        else:
+            self.controller = Controller(
+                self.analyzer, self.mmc, self.queue, self.USE_AUTOFOCUS_EVENT
+            )
         pymmcore_plus.configure_logging(stderr_level="WARNING")
         self.controller.run(df_acquire=df_acquire)
 
