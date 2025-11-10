@@ -15,6 +15,7 @@ import rtm_pymmcore.feature_extraction.abstract_fe as abstract_fe
 from rtm_pymmcore.data_structures import Fov, ImgType
 from rtm_pymmcore.utils import labels_to_particles, create_folders
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 
 def store_img(img: np.array, metadata, path: str, folder: str):
@@ -88,12 +89,9 @@ class ImageProcessingPipeline:
         # Rest of the code...
 
         metadata = event.metadata
+        metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%S:%M")
         fov_obj: Fov = metadata["fov_object"]
-        if metadata["timestep"] > 0:
-            df_old = fov_obj.tracks_queue.get(block=True, timeout=360)
-        else:
-            df_old = pd.DataFrame()
-
+        df_old = fov_obj.tracks_queue.get(block=True, timeout=360)
         if metadata["img_type"] == ImgType.IMG_OPTOCHECK:
             n_optocheck_channels = len(metadata["optocheck_channels"])
             n_channels = len(metadata["channels"])
@@ -223,9 +221,13 @@ class ImageProcessingPipeline:
 
         # cleanup: delete the previous pickled tracks file
         if metadata["timestep"] > 0:
-            fname_previous = f'{str(fov_obj.index).zfill(3)}_{str(metadata["timestep"]-1).zfill(5)}.parquet'
+            current_fname = f"{metadata['fname']}.parquet"
+            get_last_frame_number = int(metadata["timestep"]) - 1
+            get_fname_wo_f_number = current_fname.rsplit("_", 1)[0]
+            fname_previous = (
+                f"{get_fname_wo_f_number}_{str(get_last_frame_number).zfill(5)}.parquet"
+            )
             os.remove(os.path.join(self.storage_path, "tracks", fname_previous))
-
         return {"result": "STOP"}
 
 

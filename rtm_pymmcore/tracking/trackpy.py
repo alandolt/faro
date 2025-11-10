@@ -30,7 +30,7 @@ class TrackerTrackpy(Tracker):
             df_new[["x", "y"]]
         )  # Convert the df to an array of shape (shape: N, ndim) for trackpy
 
-        if metadata["timestep"] == 0:  # or table_old == None: this is the first frame
+        if df_old.empty:  # this is the first frame
             fov.linker = trackpy.linking.Linker(
                 search_range=self.search_range,
                 memory=self.memory,
