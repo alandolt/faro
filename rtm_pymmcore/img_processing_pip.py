@@ -124,7 +124,6 @@ class ImageProcessingPipeline:
 
         if self.feature_extractor is None:
             df_new = pd.DataFrame([metadata])
-            df_new = pd.concat([df_old, df_new], ignore_index=True)
             masks_for_fe = None
         else:
             df_new, masks_for_fe = self.feature_extractor.extract_features(

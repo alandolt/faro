@@ -80,9 +80,9 @@ class Moench(AbstractMicroscope):
     DMD_CALIBRATION_PROFILE = {
         "channel_group": "TTL_ERK",
         "channel_config": "CyanStim",
-        "device_name": "LedDMD",
+        "device_name": "Spectra",
         "property_name": "Cyan_Level",
-        "power": 100,
+        "power": 10,
     }
     ROI_X = 0
     ROI_Y = 60
@@ -120,11 +120,26 @@ class Moench(AbstractMicroscope):
         self.image_height = self.mmc.getImageHeight()
         self.image_width = self.mmc.getImageWidth()
 
-    def calibrate_dmd(self):
+    def calibrate_dmd(
+        self,
+        verbous=False,
+        n_points=15,
+        radius=4,
+        exposure=25,
+        marker_style="x",
+        calibration_points_DMD=None,
+    ):
         "Calibrate the DMD if it is not already calibrated." ""
         if self.dmd is not None and self.dmd.affine is None:
             self.wakeup_dmd.stop()
-            self.dmd.calibrate()
+            self.dmd.calibrate(
+                verbous=verbous,
+                n_points=n_points,
+                radius=radius,
+                exposure=exposure,
+                marker_style=marker_style,
+                calibration_points_DMD=calibration_points_DMD,
+            )
             self.wakeup_dmd.run()
 
     def run_experiment(self, df_acquire):

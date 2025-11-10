@@ -169,7 +169,7 @@ class DMD:
         verbous=False,
         n_points=15,
         radius=4,
-        exposure=800,
+        exposure=25,
         marker_style="x",
         calibration_points_DMD=None,
     ):
@@ -209,6 +209,7 @@ class DMD:
             src.append((p[1], p[0]))
             rr, cc = skimage.draw.disk((p[0], p[1]), radius)
             img_p[rr, cc] = 255
+
             event_p = MDAEvent(
                 slm_image=SLMImage(data=img_p, device=self.name),
                 exposure=exposure,
@@ -231,8 +232,9 @@ class DMD:
         @self.mmc.mda.events.frameReady.connect
         def new_frame(img: np.ndarray, event: MDAEvent):
             calibration_images.append(img)
-            # plt.imshow(img, cmap="gray")
-            # plt.show()
+            if verbous:
+                plt.imshow(img, cmap="gray")
+                plt.show()
 
         for event in events:
             self.mmc.mda.run([event])
