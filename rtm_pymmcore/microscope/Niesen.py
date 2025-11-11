@@ -1,12 +1,11 @@
 import threading
 import time
-import pymmcore_plus
 import requests
-
-from useq._mda_event import SLMImage
-from useq import MDAEvent
-from abstract_microscope import AbstractMicroscope
+from rtm_pymmcore.microscope.abstract_microscope import AbstractMicroscope
+import pymmcore_plus
 from rtm_pymmcore.dmd import DMD
+from rtm_pymmcore.microscope.abstract_microscope import AbstractMicroscope
+from rtm_pymmcore.controller import Controller, Analyzer
 
 
 class WakeUpLaser:
@@ -41,7 +40,7 @@ class WakeUpLaser:
 
 class Niesen(AbstractMicroscope):
     MICROMANAGER_PATH = "C:\\Program Files\\Micro-Manager-2.0"
-    MICROMANAGER_CONFIG = "E:\\pertzlab_mic_configs\\micromanager\\Niesen\\Ti2CicercoConfig_w_DMD_w_TTL.cfg"
+    MICROMANAGER_CONFIG = "E:\\pertzlab_mic_configs\\micromanager\\Niesen\\Ti2CicercoConfig_w_TTL.cfg"
     CHANNEL_GROUP = "Channel"
     USE_AUTOFOCUS_EVENT = False
     USE_ONLY_PFS = False
@@ -59,27 +58,28 @@ class Niesen(AbstractMicroscope):
         pymmcore_plus.use_micromanager(self.MICROMANAGER_PATH)
         self.mmc = pymmcore_plus.CMMCorePlus()
         self.wl = WakeUpLaser()
-        self.dmd = DMD(
-            self.mmc,
-            self.DMD_CALIBRATION_PROFILE,
-            affine_matrix=affine_calibration_matrix,
-        )
-        self.slm_dev = None
-        self.slm_width = None
-        self.slm_height = None
+        self.init_scope()
+        # self.dmd = DMD(
+        #     self.mmc,
+        #     self.DMD_CALIBRATION_PROFILE,
+        #     affine_matrix=affine_calibration_matrix,
+        # )
+        # self.slm_dev = None
+        # self.slm_width = None
+        # self.slm_height = None
 
     def init_scope(self):
         """Initialize the microscope."""
         self.mmc.loadSystemConfiguration(self.MICROMANAGER_CONFIG)
         self.wl.wakeup_laser()
         self.mmc.setConfig(groupName="System", configName="Startup")
-        self.slm_dev = self.mmc.getSLMDevice()
-        self.slm_width = self.mmc.getSLMWidth(self.slm_dev)
-        self.slm_height = self.mmc.getSLMHeight(self.slm_dev)
-        event_slm_on = MDAEvent(slm_image=SLMImage(data=True))
-        self.mmc.mda.run([event_slm_on])
-        self.mmc.setROI(150, 150, 1900, 1900)
-        self.mmc.setChannelGroup(channelGroup=self.DMD_CHANNEL_GROUP)
+        # self.slm_dev = self.mmc.getSLMDevice()
+        # self.slm_width = self.mmc.getSLMWidth(self.slm_dev)
+        # self.slm_height = self.mmc.getSLMHeight(self.slm_dev)
+        # event_slm_on = MDAEvent(slm_image=SLMImage(data=True))
+        # self.mmc.mda.run([event_slm_on])
+        # self.mmc.setROI(150, 150, 1900, 1900)
+        # self.mmc.setChannelGroup(channelGroup=self.DMD_CHANNEL_GROUP)
 
     def calibrate_dmd(self):
         "Calibrate the DMD if it is not already calibrated." ""
@@ -89,7 +89,12 @@ class Niesen(AbstractMicroscope):
     def run_experiment(self, df_acquire):
         """Run the experiment."""
         pymmcore_plus.configure_logging(stderr_level="WARNING")
-        self.wl.run(wait_for_warmup=True)
+        self.wl.run(wait_for_warmup=False)
+        self.analyzer = Analyzer(self.pipeline)
+        self.controller = Controller(
+            self.analyzer, self.mmc, self.queue, self.USE_AUTOFOCUS_EVENT
+        )
+        self.controller.run(df_acquire)
 
     def post_experiment(self):
         """Post-process the experiment."""

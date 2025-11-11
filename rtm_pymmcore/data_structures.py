@@ -15,6 +15,7 @@ class Fov:
         self.tracks = None
         self.linker = None
         self.tracks_queue.put(pd.DataFrame())  # initial empty dataframe:
+        self.fov_timestep_counter = 0
 
 
 @dataclass

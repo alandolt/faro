@@ -102,6 +102,7 @@ class ImageProcessingPipeline:
 
         segmentation_results = {}
         if self.segmentators is not None:
+            print("Segmenting image...")
             for seg in self.segmentators:
                 segmentation_results[seg["name"]] = seg["class"].segment(
                     img[seg["use_channel"], :, :]
@@ -127,7 +128,7 @@ class ImageProcessingPipeline:
             df_new, masks_for_fe = self.feature_extractor.extract_features(
                 segmentation_results, img
             )
-
+            print("add remaining frame related info to df...")
             for key, value in metadata.items():
                 if isinstance(value, (list, tuple)):
                     df_new[key] = pd.Series([value] * len(df_new))
@@ -137,6 +138,7 @@ class ImageProcessingPipeline:
                 else:
                     df_new[key] = value
 
+        print("Tracking cells...")
         if self.tracker is not None:
             df_tracked = self.tracker.track_cells(df_old, df_new, metadata)
         else:

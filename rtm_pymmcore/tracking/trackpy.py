@@ -5,7 +5,7 @@ import trackpy
 
 
 class TrackerTrackpy(Tracker):
-    def __init__(self, search_range=10, memory=3, adaptive_stop=3, adaptive_step=1):
+    def __init__(self, search_range=30, memory=3, adaptive_stop=3, adaptive_step=0.95):
         super().__init__()
         self.search_range = search_range
         self.memory = memory
@@ -29,8 +29,12 @@ class TrackerTrackpy(Tracker):
         coordinates = np.array(
             df_new[["x", "y"]]
         )  # Convert the df to an array of shape (shape: N, ndim) for trackpy
-
+        df_new_copy = df_new.copy()
+        df_new_copy.drop(columns=["fov_object", "img_type"], inplace=True, errors="ignore")
+        df_new_copy.to_parquet(f"debug_df{int(metadata["phase_id"]):02d}_{metadata['timestep']:05d}.parquet")
         if df_old.empty:  # this is the first frame
+            print("First frame - initializing linker")
+            print(f"Timestep counter: {fov.fov_timestep_counter}")
             fov.linker = trackpy.linking.Linker(
                 search_range=self.search_range,
                 memory=self.memory,
@@ -39,20 +43,26 @@ class TrackerTrackpy(Tracker):
             )
 
             fov.linker.init_level(
-                coordinates, metadata["timestep"]
+                coordinates, fov.fov_timestep_counter
             )  # extract positions and convert to horizontal list
             df_new["particle"] = fov.linker.particle_ids
+            df_new["fov_timestep"] = fov.fov_timestep_counter
+            fov.fov_timestep_counter += 1
             df_tracked = df_new
 
         else:
             # this is not the first frame
+            print("Subsequent frame - updating linker")
+            print(f"Timestep counter: {fov.fov_timestep_counter}")
             fov.linker.next_level(
-                coordinates, metadata["timestep"]
+                coordinates, fov.fov_timestep_counter
             )  # extract positions and convert to horizontal list
             df_new["particle"] = fov.linker.particle_ids
+            df_new["fov_timestep"] = fov.fov_timestep_counter
+            fov.fov_timestep_counter += 1
             df_tracked = pd.concat([df_old, df_new])
 
         # this is against a in trackpy, where the same ID gets assigned twice in one frame
-        df_tracked = df_tracked.drop_duplicates(subset=["particle", "timestep"])
+        df_tracked = df_tracked.drop_duplicates(subset=["particle", "fov_timestep"])
         df_tracked = df_tracked.reset_index(drop=True)
         return df_tracked
