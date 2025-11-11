@@ -33,8 +33,6 @@ class TrackerTrackpy(Tracker):
         df_new_copy.drop(columns=["fov_object", "img_type"], inplace=True, errors="ignore")
         df_new_copy.to_parquet(f"debug_df{int(metadata["phase_id"]):02d}_{metadata['timestep']:05d}.parquet")
         if df_old.empty:  # this is the first frame
-            print("First frame - initializing linker")
-            print(f"Timestep counter: {fov.fov_timestep_counter}")
             fov.linker = trackpy.linking.Linker(
                 search_range=self.search_range,
                 memory=self.memory,
@@ -52,8 +50,6 @@ class TrackerTrackpy(Tracker):
 
         else:
             # this is not the first frame
-            print("Subsequent frame - updating linker")
-            print(f"Timestep counter: {fov.fov_timestep_counter}")
             fov.linker.next_level(
                 coordinates, fov.fov_timestep_counter
             )  # extract positions and convert to horizontal list

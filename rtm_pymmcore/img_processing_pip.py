@@ -102,7 +102,6 @@ class ImageProcessingPipeline:
 
         segmentation_results = {}
         if self.segmentators is not None:
-            print("Segmenting image...")
             for seg in self.segmentators:
                 segmentation_results[seg["name"]] = seg["class"].segment(
                     img[seg["use_channel"], :, :]
@@ -128,7 +127,6 @@ class ImageProcessingPipeline:
             df_new, masks_for_fe = self.feature_extractor.extract_features(
                 segmentation_results, img
             )
-            print("add remaining frame related info to df...")
             for key, value in metadata.items():
                 if isinstance(value, (list, tuple)):
                     df_new[key] = pd.Series([value] * len(df_new))
@@ -138,7 +136,6 @@ class ImageProcessingPipeline:
                 else:
                     df_new[key] = value
 
-        print("Tracking cells...")
         if self.tracker is not None:
             df_tracked = self.tracker.track_cells(df_old, df_new, metadata)
         else:
@@ -215,7 +212,7 @@ class ImageProcessingPipeline:
                 segmentation_results.items(), self.segmentators
             ):
                 if segmentator.get("save_tracked", False):
-                    tracked_label = labels_to_particles(value, df_tracked)
+                    tracked_label = labels_to_particles(value, df_tracked, metadata=metadata)
                     store_img(tracked_label, metadata, self.storage_path, "particles")
                     store_img(value, metadata, self.storage_path, key)
                 else:
@@ -439,7 +436,7 @@ class ImageProcessingPipeline_postExperiment:
                     segmentation_results.items(), self.segmentators
                 ):
                     if segmentator.get("save_tracked", False):
-                        tracked_label = labels_to_particles(value, df_tracked)
+                        tracked_label = labels_to_particles(value, df_tracked, metadata)
                         store_img(
                             tracked_label, metadata, self.storage_path, "particles"
                         )
