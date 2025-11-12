@@ -29,9 +29,6 @@ class TrackerTrackpy(Tracker):
         coordinates = np.array(
             df_new[["x", "y"]]
         )  # Convert the df to an array of shape (shape: N, ndim) for trackpy
-        df_new_copy = df_new.copy()
-        df_new_copy.drop(columns=["fov_object", "img_type"], inplace=True, errors="ignore")
-        df_new_copy.to_parquet(f"debug_df{int(metadata["phase_id"]):02d}_{metadata['timestep']:05d}.parquet")
         if df_old.empty:  # this is the first frame
             fov.linker = trackpy.linking.Linker(
                 search_range=self.search_range,
@@ -45,7 +42,6 @@ class TrackerTrackpy(Tracker):
             )  # extract positions and convert to horizontal list
             df_new["particle"] = fov.linker.particle_ids
             df_new["fov_timestep"] = fov.fov_timestep_counter
-            fov.fov_timestep_counter += 1
             df_tracked = df_new
 
         else:
@@ -55,7 +51,6 @@ class TrackerTrackpy(Tracker):
             )  # extract positions and convert to horizontal list
             df_new["particle"] = fov.linker.particle_ids
             df_new["fov_timestep"] = fov.fov_timestep_counter
-            fov.fov_timestep_counter += 1
             df_tracked = pd.concat([df_old, df_new])
 
         # this is against a in trackpy, where the same ID gets assigned twice in one frame

@@ -89,9 +89,12 @@ class ImageProcessingPipeline:
         # Rest of the code...
 
         metadata = event.metadata
-        metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%S:%M")
+        metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
         fov_obj: Fov = metadata["fov_object"]
         df_old = fov_obj.tracks_queue.get(block=True, timeout=360)
+        if "phase_id" or "phase_name" in metadata:
+            metadata["fov_timestep"] = fov_obj.fov_timestep_counter
+
         if metadata["img_type"] == ImgType.IMG_OPTOCHECK:
             n_optocheck_channels = len(metadata["optocheck_channels"])
             n_channels = len(metadata["channels"])
@@ -153,6 +156,7 @@ class ImageProcessingPipeline:
                     metadata,
                 )
         fov_obj.tracks_queue.put(df_tracked)
+        fov_obj.fov_timestep_counter += 1
 
         if not df_tracked.empty:
             df_tracked = df_tracked.drop(
@@ -212,7 +216,9 @@ class ImageProcessingPipeline:
                 segmentation_results.items(), self.segmentators
             ):
                 if segmentator.get("save_tracked", False):
-                    tracked_label = labels_to_particles(value, df_tracked, metadata=metadata)
+                    tracked_label = labels_to_particles(
+                        value, df_tracked, metadata=metadata
+                    )
                     store_img(tracked_label, metadata, self.storage_path, "particles")
                     store_img(value, metadata, self.storage_path, key)
                 else:

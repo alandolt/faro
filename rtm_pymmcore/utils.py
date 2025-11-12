@@ -193,8 +193,6 @@ def generate_df_acquire(
         df_acquire["phase"] = phase_name
     if phase_id is not None:
         df_acquire["phase_id"] = phase_id
-    if phase_name or phase_id is not None:
-        df_acquire["phase_timestep"] = df_acquire["timestep"] + int(phase_id) * n_frames
     print(f"Total Experiment Time: {df_acquire['time'].max()/3600}h")
     return df_acquire
 

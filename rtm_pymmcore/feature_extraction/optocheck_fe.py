@@ -42,12 +42,20 @@ class OptoCheckFE(FeatureExtractorOptoCheck):
         elif self.multi_timepoint:
             if "optocheck_mean_intensity" not in df_tracked.columns:
                 df_tracked["optocheck_mean_intensity"] = np.nan
-            table["timestep"] = metadata["timestep"]
+            if "fov_timestep" in metadata:
+                timestep_name_variable = "fov_timestep"
+            else:
+                timestep_name_variable = "timestep"
+
+            table[timestep_name_variable] = metadata[timestep_name_variable]
             table["fov"] = metadata["fov"]
             # Update only matching particle/timestep/fov combinations
             mask = (
                 (df_tracked["particle"].isin(table["particle"]))
-                & (df_tracked["timestep"] == metadata["timestep"])
+                & (
+                    df_tracked[timestep_name_variable]
+                    == metadata[timestep_name_variable]
+                )
                 & (df_tracked["fov"] == metadata["fov"])
             )
             df_tracked.loc[mask, "optocheck_mean_intensity"] = df_tracked.loc[
