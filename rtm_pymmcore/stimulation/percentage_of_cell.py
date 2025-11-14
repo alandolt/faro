@@ -3,6 +3,7 @@ import numpy as np
 import skimage
 import math
 from skimage.morphology import disk
+
 # import skimage binary_dilation under a local name and provide a scipy fallback
 from skimage.morphology import binary_dilation as skimage_binary_dilation
 from scipy.ndimage import binary_dilation as scipy_binary_dilation
@@ -31,7 +32,7 @@ class StimPercentageOfCell(Stim):
         props = skimage.measure.regionprops(label_image)
         if metadata is None:
             metadata = {}
-        percentage_of_stim = metadata.get("stim_cell_percentage", 0.4)
+        percentage_of_stim = metadata.get("stim_cell_percentage", 0.3)
 
         selem = disk(5)
 
@@ -86,19 +87,27 @@ class StimPercentageOfCell(Stim):
                 # expand the labeled region locally in a version-compatible way
                 try:
                     # newest skimage uses 'footprint'
-                    expanded_sub = skimage_binary_dilation(single_label_sub, footprint=selem)
+                    expanded_sub = skimage_binary_dilation(
+                        single_label_sub, footprint=selem
+                    )
                 except TypeError:
                     try:
                         # older skimage used 'selem'
-                        expanded_sub = skimage_binary_dilation(single_label_sub, selem=selem)
+                        expanded_sub = skimage_binary_dilation(
+                            single_label_sub, selem=selem
+                        )
                     except TypeError:
                         # fallback to scipy implementation (uses 'structure')
-                        expanded_sub = scipy_binary_dilation(single_label_sub, structure=selem)
+                        expanded_sub = scipy_binary_dilation(
+                            single_label_sub, structure=selem
+                        )
 
                 stim_mask_sub = np.logical_and(cutoff_mask_sub, expanded_sub)
 
                 # write back to global map
-                light_map[r0:r1, c0:c1] = np.logical_or(light_map[r0:r1, c0:c1], stim_mask_sub)
+                light_map[r0:r1, c0:c1] = np.logical_or(
+                    light_map[r0:r1, c0:c1], stim_mask_sub
+                )
 
             return light_map.astype("uint8"), None
         except Exception as e:
