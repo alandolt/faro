@@ -42,7 +42,7 @@ def labels_to_particles(labels, tracks, metadata=None):
 def fix_tuples_in_stim_exposure_list(
     stim_exposures_timesteps,
 ):
-    """Convert any range or list in the stim_exposures_timesteps_before_pause to tuples."""
+    """Convert any range or list in the stim_exposures_timesteps_before_pause to tuples. Deprecated"""
 
     for stim_exposure_timestep in stim_exposures_timesteps:
         if isinstance(stim_exposure_timestep["stim_timestep"], range):
@@ -63,16 +63,38 @@ def fix_tuples_in_stim_exposure_list(
             )
 
 
+def fix_tuples_stim_treatment(
+    stim_treatment,
+):
+    """Convert any range or list in the stim_exposures_timesteps_before_pause to tuples."""
+
+    if isinstance(stim_treatment["stim_timestep"], range):
+        stim_treatment["stim_timestep"] = tuple(stim_treatment["stim_timestep"])
+    if isinstance(stim_treatment["stim_exposure"], range):
+        stim_treatment["stim_exposure"] = tuple(stim_treatment["stim_exposure"])
+    if isinstance(stim_treatment["stim_timestep"], list):
+        stim_treatment["stim_timestep"] = tuple(stim_treatment["stim_timestep"])
+    if isinstance(stim_treatment["stim_exposure"], list):
+        stim_treatment["stim_exposure"] = tuple(stim_treatment["stim_exposure"])
+
+
 def add_stim_parameters_to_stim_exposures_timesteps(
     stim_exposures_timesteps,
+    stim_power=10,
+    stim_channel_name="CyanStim",
+    stim_channel_group="TTL_ERK",
+    stim_channel_device_name="Spectra",
+    stim_channel_power_property_name="Cyan_Level",
 ):
     """Add general stimulation parameters to each stim_exposures_timesteps_before_pause dict."""
     for stim_exposure_timestep in stim_exposures_timesteps:
-        stim_exposure_timestep["stim_power"] = 10
-        stim_exposure_timestep["stim_channel_name"] = "Red"
-        stim_exposure_timestep["stim_channel_group"] = "WF_TTL"
-        stim_exposure_timestep["stim_channel_device_name"] = "LedDMD"
-        stim_exposure_timestep["stim_channel_power_property_name"] = "Cyan_Level"
+        stim_exposure_timestep["stim_power"] = stim_power
+        stim_exposure_timestep["stim_channel_name"] = stim_channel_name
+        stim_exposure_timestep["stim_channel_group"] = stim_channel_group
+        stim_exposure_timestep["stim_channel_device_name"] = stim_channel_device_name
+        stim_exposure_timestep["stim_channel_power_property_name"] = (
+            stim_channel_power_property_name
+        )
 
 
 def print_stim_exposures_timesteps(
