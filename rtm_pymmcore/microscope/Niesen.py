@@ -3,6 +3,8 @@ import time
 import requests
 from rtm_pymmcore.microscope.abstract_microscope import AbstractMicroscope
 import pymmcore_plus
+from useq._mda_event import SLMImage
+from useq import MDAEvent
 from rtm_pymmcore.dmd import DMD
 from rtm_pymmcore.microscope.abstract_microscope import AbstractMicroscope
 from rtm_pymmcore.controller import Controller, Analyzer
@@ -19,7 +21,7 @@ class WakeUpLaser:
         url = f"http://{self.ip}/service/?command=WAKEUP"
         requests.get(url, timeout=5)
 
-    def run(self, wait_for_warmup=False):
+    def run(self, wait_for_warmup=True):
         self.is_running = True
         self.thread = threading.Thread(target=self._keep_alive)
         self.thread.start()
@@ -39,8 +41,8 @@ class WakeUpLaser:
 
 
 class Niesen(AbstractMicroscope):
-    MICROMANAGER_PATH = "C:\\Program Files\\Micro-Manager-2.0"
-    MICROMANAGER_CONFIG = "E:\\pertzlab_mic_configs\\micromanager\\Niesen\\Ti2CicercoConfig_w_TTL.cfg"
+    MICROMANAGER_PATH = "C:\\Users\\Niesen\\Desktop\\Micro-Manager-2.0"
+    MICROMANAGER_CONFIG = "E:\\pertzlab_mic_configs\\micromanager\\Niesen\\Ti2CicercoConfig_w_DMD_w_TTL.cfg"
     CHANNEL_GROUP = "Channel"
     USE_AUTOFOCUS_EVENT = False
     USE_ONLY_PFS = False
@@ -58,33 +60,44 @@ class Niesen(AbstractMicroscope):
         pymmcore_plus.use_micromanager(self.MICROMANAGER_PATH)
         self.mmc = pymmcore_plus.CMMCorePlus()
         self.wl = WakeUpLaser()
+        self.wl.wakeup_laser()
+        time.sleep(10)
         self.init_scope()
-        # self.dmd = DMD(
-        #     self.mmc,
-        #     self.DMD_CALIBRATION_PROFILE,
-        #     affine_matrix=affine_calibration_matrix,
-        # )
-        # self.slm_dev = None
-        # self.slm_width = None
-        # self.slm_height = None
+        self.dmd = DMD(
+            self.mmc,
+            self.DMD_CALIBRATION_PROFILE,
+            affine_matrix=affine_calibration_matrix,
+        )
+        self.slm_dev = None
+        self.slm_width = None
+        self.slm_height = None
 
     def init_scope(self):
         """Initialize the microscope."""
         self.mmc.loadSystemConfiguration(self.MICROMANAGER_CONFIG)
         self.wl.wakeup_laser()
         self.mmc.setConfig(groupName="System", configName="Startup")
-        # self.slm_dev = self.mmc.getSLMDevice()
-        # self.slm_width = self.mmc.getSLMWidth(self.slm_dev)
-        # self.slm_height = self.mmc.getSLMHeight(self.slm_dev)
-        # event_slm_on = MDAEvent(slm_image=SLMImage(data=True))
-        # self.mmc.mda.run([event_slm_on])
-        # self.mmc.setROI(150, 150, 1900, 1900)
-        # self.mmc.setChannelGroup(channelGroup=self.DMD_CHANNEL_GROUP)
+        self.slm_dev = self.mmc.getSLMDevice()
+        self.slm_width = self.mmc.getSLMWidth(self.slm_dev)
+        self.slm_height = self.mmc.getSLMHeight(self.slm_dev)
+        self.mmc.setSLMPixelsTo(self.slm_dev, 255)
+        self.mmc.displaySLMImage(self.slm_dev)
+        self.mmc.setChannelGroup(channelGroup=self.DMD_CHANNEL_GROUP)
 
-    def calibrate_dmd(self):
+    def calibrate_dmd(self, verbous=False,
+        n_points=15,
+        radius=4,
+        exposure=25,
+        marker_style="x",
+        calibration_points_DMD=None,):
         "Calibrate the DMD if it is not already calibrated." ""
         if self.dmd is not None and self.dmd.affine is None:
-            self.dmd.calibrate()
+            self.dmd.calibrate(verbous=verbous,
+                n_points=n_points,
+                radius=radius,
+                exposure=exposure,
+                marker_style=marker_style,
+                calibration_points_DMD=calibration_points_DMD,)
 
     def run_experiment(self, df_acquire):
         """Run the experiment."""

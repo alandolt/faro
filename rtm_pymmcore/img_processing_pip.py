@@ -86,8 +86,6 @@ class ImageProcessingPipeline:
         9. Store the segmented images and labels.
         """
 
-        # Rest of the code...
-
         metadata = event.metadata
         metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
         fov_obj: Fov = metadata["fov_object"]

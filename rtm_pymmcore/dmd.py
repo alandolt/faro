@@ -254,11 +254,11 @@ class DMD:
             (src, dst),
             skimage.transform.AffineTransform,
             min_samples=3,
-            residual_threshold=2,
+            residual_threshold=5,
             max_trials=5000,
         )
 
-        if np.sum(inliers) < 5:
+        if np.sum(inliers) < 4:
             self.mmc.mda.events.frameReady.disconnect()
             self.mmc.mda.run(
                 [
@@ -276,9 +276,9 @@ class DMD:
                 ]
             )
 
-            raise ValueError(
-                "Not enough inliers found for calibration. Try again with a different FOV."
-            )
+            print(f"Not enough inliers found for calibration. Total inliers: {np.sum(inliers)}, required: 5. Try again. ")
+            self.all_on()
+            return
         self.affine = affine_model.params
 
         if verbous:
