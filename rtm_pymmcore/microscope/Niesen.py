@@ -41,7 +41,7 @@ class WakeUpLaser:
 
 
 class Niesen(AbstractMicroscope):
-    MICROMANAGER_PATH = "C:\\Users\\Niesen\\Desktop\\Micro-Manager-2.0"
+    MICROMANAGER_PATH = "C:\\Program Files\\Micro-Manager-2.0"
     MICROMANAGER_CONFIG = "E:\\pertzlab_mic_configs\\micromanager\\Niesen\\Ti2CicercoConfig_w_DMD_w_TTL.cfg"
     CHANNEL_GROUP = "Channel"
     USE_AUTOFOCUS_EVENT = False
@@ -55,13 +55,14 @@ class Niesen(AbstractMicroscope):
         "power": 100,
     }
 
-    def __init__(self, affine_calibration_matrix=None):
+    def __init__(self, affine_calibration_matrix=None, fast_init=False):
         super().__init__()
         pymmcore_plus.use_micromanager(self.MICROMANAGER_PATH)
         self.mmc = pymmcore_plus.CMMCorePlus()
         self.wl = WakeUpLaser()
         self.wl.wakeup_laser()
-        time.sleep(10)
+        if not fast_init:
+            time.sleep(10)
         self.init_scope()
         self.dmd = DMD(
             self.mmc,
@@ -105,7 +106,7 @@ class Niesen(AbstractMicroscope):
         self.wl.run(wait_for_warmup=False)
         self.analyzer = Analyzer(self.pipeline)
         self.controller = Controller(
-            self.analyzer, self.mmc, self.queue, self.USE_AUTOFOCUS_EVENT
+            self.analyzer, self.mmc, self.queue, self.USE_AUTOFOCUS_EVENT, dmd=self.dmd
         )
         self.controller.run(df_acquire)
 
