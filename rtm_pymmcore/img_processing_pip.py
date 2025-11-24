@@ -15,6 +15,7 @@ import rtm_pymmcore.feature_extraction.abstract_fe as abstract_fe
 from rtm_pymmcore.data_structures import Fov, ImgType
 from rtm_pymmcore.utils import labels_to_particles, create_folders
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 
 def store_img(img: np.array, metadata, path: str, folder: str):
@@ -85,14 +86,12 @@ class ImageProcessingPipeline:
         9. Store the segmented images and labels.
         """
 
-        # Rest of the code...
-
         metadata = event.metadata
+        metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
         fov_obj: Fov = metadata["fov_object"]
-        if metadata["timestep"] > 0:
-            df_old = fov_obj.tracks_queue.get(block=True, timeout=360)
-        else:
-            df_old = pd.DataFrame()
+        df_old = fov_obj.tracks_queue.get(block=True, timeout=360)
+        if "phase_id" or "phase_name" in metadata:
+            metadata["fov_timestep"] = fov_obj.fov_timestep_counter
 
         if metadata["img_type"] == ImgType.IMG_OPTOCHECK:
             n_optocheck_channels = len(metadata["optocheck_channels"])
@@ -129,7 +128,6 @@ class ImageProcessingPipeline:
             df_new, masks_for_fe = self.feature_extractor.extract_features(
                 segmentation_results, img
             )
-
             for key, value in metadata.items():
                 if isinstance(value, (list, tuple)):
                     df_new[key] = pd.Series([value] * len(df_new))
@@ -156,6 +154,7 @@ class ImageProcessingPipeline:
                     metadata,
                 )
         fov_obj.tracks_queue.put(df_tracked)
+        fov_obj.fov_timestep_counter += 1
 
         if not df_tracked.empty:
             df_tracked = df_tracked.drop(
@@ -215,7 +214,9 @@ class ImageProcessingPipeline:
                 segmentation_results.items(), self.segmentators
             ):
                 if segmentator.get("save_tracked", False):
-                    tracked_label = labels_to_particles(value, df_tracked)
+                    tracked_label = labels_to_particles(
+                        value, df_tracked, metadata=metadata
+                    )
                     store_img(tracked_label, metadata, self.storage_path, "particles")
                     store_img(value, metadata, self.storage_path, key)
                 else:
@@ -223,9 +224,13 @@ class ImageProcessingPipeline:
 
         # cleanup: delete the previous pickled tracks file
         if metadata["timestep"] > 0:
-            fname_previous = f'{str(fov_obj.index).zfill(3)}_{str(metadata["timestep"]-1).zfill(5)}.parquet'
+            current_fname = f"{metadata['fname']}.parquet"
+            get_last_frame_number = int(metadata["timestep"]) - 1
+            get_fname_wo_f_number = current_fname.rsplit("_", 1)[0]
+            fname_previous = (
+                f"{get_fname_wo_f_number}_{str(get_last_frame_number).zfill(5)}.parquet"
+            )
             os.remove(os.path.join(self.storage_path, "tracks", fname_previous))
-
         return {"result": "STOP"}
 
 
@@ -435,7 +440,7 @@ class ImageProcessingPipeline_postExperiment:
                     segmentation_results.items(), self.segmentators
                 ):
                     if segmentator.get("save_tracked", False):
-                        tracked_label = labels_to_particles(value, df_tracked)
+                        tracked_label = labels_to_particles(value, df_tracked, metadata)
                         store_img(
                             tracked_label, metadata, self.storage_path, "particles"
                         )
