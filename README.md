@@ -155,13 +155,18 @@ You can add any additional properties or methods needed for your specific hardwa
 
 ### Running the Script
 
-The workflow is designed to be executed step by step using Jupyter notebooks. This allows for interactive control and monitoring of the experiment. Currently, three example workflows are provided:
+The workflow is designed to be executed step by step using Jupyter notebooks. This allows for interactive control and monitoring of the experiment. A cleaned, canonical example demonstrating the recommended API pattern is provided, plus several domain-specific demo notebooks:
 
-* **`00_NoStim.ipynb`**: This notebook demonstrates how to run the pipeline without any stimulation. It focuses on cell tracking and feature extraction. This is an excellent starting point for users to familiarize themselves with the basic structure of the pipeline and the functionality of different modules. It utilizes a simulated Micro-Manager demo microscope and loads example images from the `test_exp_data` folder.
+- **`01_full_FOV_stimulation_ERK_new_API.ipynb`** (recommended): the cleaned example showing how to generate acquisition schedules using `utils.generate_df_acquire`, how to map stimulation treatments with `utils.apply_stim_treatments_to_df_acquire`, and how to run one or multiple `df_acquire` objects sequentially. Use this notebook as the main reference for reproducible experiment scripting with the repository.
 
-* **`01_full_FOV_stimulation_ERK_w_optocheck.ipynb`** and **`01_full_FOV_stimulation_ERK_w_ramp_w_optocheck.ipynb`**: These notebooks showcase a full field of view stimulation experiment targeting cells expressing an optogenetic actuator, such as FGFR1. The translocation of the ERK-KTR biosensor is measured in all individual cells as a readout of the stimulation response. Both versions features an image which will be acquired after the experiment to quantify the optogenetic actuator (optocheck). The difference between the two notebooks is that `01_full_FOV_stimulation_ERK_w_ramp_w_optocheck.ipynb` includes a ramping stimulation protocol, where the stimulation intensity is gradually increased over time, whereas `01_full_FOV_stimulation_ERK_w_optocheck.ipynb` applies a constant stimulation exposure.
+Other example notebooks (kept as domain-specific demos and updated to reference the new API):
 
-* **`02_CellMigration.ipynb`**. This notebook illustrate how the pipeline can be used for studying directed cell migration. In this example, only the front part of the migrating cells is selectively stimulated with light using structured illumination. Similar to the previous example, two versions are provided:
+- **`00_NoStim.ipynb`**: run the pipeline without stimulation. Updated to include a compact example that uses `utils.generate_df_acquire` to create the acquisition schedule and a pointer to the `01` example for more advanced patterns.
+
+- **`02_CellMigration.ipynb`** / **`02_CellMigration_Mic.ipynb`**: directed cell migration demos. `02_CellMigration_Mic.ipynb` was updated with a small example showing `utils.generate_df_acquire` and how to apply stim-treatment mapping.
+
+- **`03_LineStimulation.ipynb`**: line-pattern stimulation demo.
+
 
 ## Installation
 

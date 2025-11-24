@@ -225,7 +225,9 @@ def generate_df_acquire(
     dfs = []
     for fov_index, fov in enumerate(fovs):
         fov_group = fov_index // n_fovs_simultaneously
-        start_time_fov = fov_group * time_between_timesteps * len(timesteps)
+        start_time_fov = start_time + fov_group * time_between_timesteps * len(
+            timesteps
+        )
         if condition is None or len(condition) == 0:
             condition_fov = None
         elif len(condition) == 1:
@@ -268,6 +270,10 @@ def generate_df_acquire(
         df_acquire["phase"] = phase_name
     if phase_id is not None:
         df_acquire["phase_id"] = phase_id
+
+    # Sort by time and fov for consistent ordering
+    df_acquire = df_acquire.sort_values(by=["time", "fov"]).reset_index(drop=True)
+
     print(f"Total Experiment Time: {df_acquire['time'].max()/3600}h")
     return df_acquire
 

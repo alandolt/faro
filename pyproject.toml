@@ -29,6 +29,7 @@ ome_zarr = [
 stardist = [
     "stardist",
     "tensorflow",
+    "csbdeep",
     ]
 
 cellpose = [
