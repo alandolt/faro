@@ -91,16 +91,12 @@ class ImageProcessingPipeline:
         metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
         fov_obj: Fov = metadata["fov_object"]
 
-        if metadata["stim"] == True:
-            stim_mask, _ = self.stimulator.get_stim_mask({}, metadata, img)
-            fov_obj.stim_mask_queue.put_nowait(stim_mask)
-
         try:
             # First attempt: pull from queue
             df_old = fov_obj.tracks_queue.get(block=True, timeout=15)
 
-        except TimeoutError:
-            print("Timeout Error")
+        except Exception as e:
+            print("Exception", e)
             # If queue is empty → fallback to file-based recovery
             current_fname = f"{metadata['fname']}.parquet"
             base = current_fname.rsplit("_", 1)[0]
@@ -176,6 +172,13 @@ class ImageProcessingPipeline:
             df_tracked = self.tracker.track_cells(df_old, df_new, metadata)
         else:
             df_tracked = pd.concat([df_old, df_new], ignore_index=True)
+
+        if metadata["stim"] == True:
+            stim_mask, _ = self.stimulator.get_stim_mask(
+                label_images=segmentation_results, metadata=metadata, img=img
+            )
+            if self.stimulator.use_labels:
+                fov_obj.stim_mask_queue.put_nowait(stim_mask)
 
         if metadata["img_type"] == ImgType.IMG_OPTOCHECK:
             if (
@@ -487,7 +490,8 @@ class ImageProcessingPipeline_postExperiment:
 
         df_tracked.drop(columns=["fov_object"], inplace=True)
         df_tracked.to_parquet(
-            os.path.join(self.storage_path, "tracks", f"{metadata['fname']}.parquet")
+            os.path.join(self.storage_path, "tracks", f"{metadata['fname']}.parquet"),
+            compression="zstd",
         )
 
         return df_tracked

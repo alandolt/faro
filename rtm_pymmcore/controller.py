@@ -267,17 +267,22 @@ class Controller:
                         slm_image = None
 
                         if self._dmd is not None:
-                            try:
-                                stim_mask = fov_obj.stim_mask_queue.get(
-                                    block=True, timeout=35
+                            if self._analyzer.pipeline.stimulator.use_labels:
+                                try:
+                                    stim_mask = fov_obj.stim_mask_queue.get(
+                                        block=True, timeout=35
+                                    )
+                                    stim_mask = self._dmd.affine_transform(stim_mask)
+                                except Exception as e:
+                                    print(f"Exception: {str(e)}")
+                                    stim_mask = False
+                            else:
+                                stim_mask, _ = (
+                                    self._analyzer.pipeline.stimulator.get_stim_mask(
+                                        {}, metadata=metadata_dict
+                                    )
                                 )
-                                if np.all(stim_mask == 1):
-                                    stim_mask = True
                                 stim_mask = self._dmd.affine_transform(stim_mask)
-                            except TimeoutError:
-                                print("Attention Timeout in Mask generation")
-                                stim_mask = False
-
                             slm_image = SLMImage(
                                 data=stim_mask,
                                 device=self._dmd.name,
