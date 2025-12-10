@@ -64,13 +64,17 @@ class ImageProcessingPipeline:
                 folders.extend(feature_extractor_optocheck.extra_folders)
         create_folders(self.storage_path, folders)
 
-    def run(self, img: np.ndarray, event: MDAEvent) -> dict:
+    def run(
+        self, img: np.ndarray = None, event: MDAEvent = None, file_path: str = None
+    ) -> dict:
         """
         Runs the image processing pipeline on the input image.
 
         Args:
-            img (np.ndarray): The input image to process.
-            event (MDAEvent): The MDAEvent used to capture the image, which also containins the metadata.
+            img (np.ndarray, optional): The input image to process (loaded in memory).
+            event (MDAEvent, optional): The MDAEvent used to capture the image, which also contains the metadata.
+            file_path (str, optional): Path to a saved image file (TIFF format). If provided, image is loaded from disk.
+                                      Either `img` or `file_path` must be provided, not both.
 
         Returns:
             dict: A dictionary containing the result of the pipeline.
@@ -86,6 +90,16 @@ class ImageProcessingPipeline:
         8. Store the intermediate tracks dataframe.
         9. Store the segmented images and labels.
         """
+
+        # Validate inputs: exactly one of img or file_path must be provided
+        if (img is None and file_path is None) or (
+            img is not None and file_path is not None
+        ):
+            raise ValueError("Exactly one of 'img' or 'file_path' must be provided")
+
+        # Load image from file if file_path is provided
+        if file_path is not None:
+            img = tifffile.imread(file_path)
 
         metadata = event.metadata
         metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")

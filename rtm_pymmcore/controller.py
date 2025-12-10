@@ -15,13 +15,33 @@ import pandas as pd
 import time
 import tifffile
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 
 class Analyzer:
-    """When a new image is acquired, decide what to do here. Segment, get stim mask, just store"""
+    """When a new image is acquired, decide what to do here. Segment, get stim mask, just store.
 
-    def __init__(self, pipeline: ImageProcessingPipeline = None):
+    When the processing queue is full, saves images to disk and processes from disk to avoid
+    memory overflow. Direct in-memory processing is used when queue has capacity.
+    """
+
+    def __init__(
+        self,
+        pipeline: ImageProcessingPipeline = None,
+        max_workers: int = 4,
+        max_queue_size: int = 10,
+    ):
+        """
+        Args:
+            pipeline: ImageProcessingPipeline instance
+            max_workers: Number of worker threads (default: 4)
+            max_queue_size: Maximum number of tasks in queue before switching to disk-based processing (default: 10)
+        """
         self.pipeline = pipeline
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self.max_queue_size = max_queue_size
+        self.active_tasks = 0
+        self.task_lock = threading.Lock()
 
     def run(self, img: np.array, event: MDAEvent) -> dict:
         metadata = event.metadata
@@ -30,10 +50,9 @@ class Analyzer:
         if img_type == ImgType.IMG_RAW:
             # raw image, send to pipeline and store
             store_img(img, metadata, self.pipeline.storage_path, "raw")
-            # self.pipeline.run(img, event)
+            # Submit pipeline processing to thread pool with smart memory management
             if self.pipeline is not None:
-                thread = threading.Thread(target=self.pipeline.run, args=(img, event))
-                thread.start()
+                self._submit_analysis(img, event, metadata, folder="raw")
 
         elif img_type == ImgType.IMG_STIM:
             # stim image, store
@@ -43,11 +62,11 @@ class Analyzer:
             # on one side store image as normal raw, but also send a copy to optocheck pipeline
             # raw image, send to pipeline and store
             len_raw_img = len(metadata["channels"])
-            # self.pipeline.run(img, event)
+            img_raw = img[0:len_raw_img]
+            # Submit pipeline processing to thread pool with smart memory management
             if self.pipeline is not None:
-                thread = threading.Thread(target=self.pipeline.run, args=(img, event))
-                thread.start()
-            store_img(img[0:len_raw_img], metadata, self.pipeline.storage_path, "raw")
+                self._submit_analysis(img, event, metadata, folder="optocheck")
+            store_img(img_raw, metadata, self.pipeline.storage_path, "raw")
             if not os.path.exists(
                 os.path.join(self.pipeline.storage_path, "optocheck")
             ):
@@ -55,6 +74,48 @@ class Analyzer:
             store_img(img, metadata, self.pipeline.storage_path, "optocheck")
 
         return {"result": "STOP"}
+
+    def _submit_analysis(
+        self, img: np.array, event: MDAEvent, metadata: dict, folder: str = "raw"
+    ):
+        """Submit image analysis task, using file_path when queue is full to avoid memory overflow.
+
+        Args:
+            img: Image array (used if queue has capacity)
+            event: MDAEvent with metadata
+            metadata: Image metadata dict
+            folder: Folder where image is stored ("raw" or "optocheck")
+        """
+        with self.task_lock:
+            queue_is_full = self.active_tasks >= self.max_queue_size
+            if not queue_is_full:
+                self.active_tasks += 1
+
+        if queue_is_full:
+            # Queue is full: process from disk instead of keeping image in memory
+            file_path = os.path.join(
+                self.pipeline.storage_path, folder, metadata["fname"] + ".tiff"
+            )
+            future = self.executor.submit(
+                self.pipeline.run, img=None, event=event, file_path=file_path
+            )
+        else:
+            # Queue has capacity: process directly from memory
+            future = self.executor.submit(
+                self.pipeline.run, img=img, event=event, file_path=None
+            )
+
+        # Decrement counter when task completes
+        future.add_done_callback(lambda f: self._task_done())
+
+    def _task_done(self):
+        """Called when a task completes to decrement the active task counter."""
+        with self.task_lock:
+            self.active_tasks -= 1
+
+    def shutdown(self, wait: bool = True):
+        """Shutdown the thread pool executor. Call this when done with acquisition."""
+        self.executor.shutdown(wait=wait)
 
 
 class Controller:
@@ -98,6 +159,8 @@ class Controller:
     def stop_run(self):
         self._queue.put(self.STOP_EVENT)
         self._mmc.mda.cancel()
+        # Shutdown the thread pool executor to allow pending tasks to complete
+        self._analyzer.shutdown(wait=True)
 
     def is_running(self):
         return self._queue.qsize() > 0
