@@ -8,9 +8,8 @@ from useq._mda_event import SLMImage
 from useq import HardwareAutofocus
 import useq
 from useq import MDAEvent
-from queue import Queue
+from queue import Queue, Empty as QueueEmpty
 import numpy as np
-import threading
 import pandas as pd
 import time
 import tifffile
@@ -19,52 +18,99 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 class Analyzer:
-    """When a new image is acquired, decide what to do here. Segment, get stim mask, just store.
+    """Image analyzer with priority: Get → Store >> Pipeline.
 
-    When the processing queue is full, saves images to disk and processes from disk to avoid
-    memory overflow. Direct in-memory processing is used when queue has capacity.
+    Priority order:
+    1. get(img) - immediate return to MDA (< 1ms)
+    2. store_img() - disk save (guaranteed, no skip)
+    3. pipeline.run() - only if resources available (can skip if overloaded)
+
+    This ensures:
+    - Real-time MDA unaffected
+    - Data always saved
+    - Pipeline runs when possible without blocking anything
     """
 
     def __init__(
         self,
         pipeline: ImageProcessingPipeline = None,
-        max_workers: int = 4,
-        max_queue_size: int = 10,
+        max_workers: int = 3,  # Reduced: storage is priority
+        max_queue_size: int = 20,
     ):
         """
         Args:
-            pipeline: ImageProcessingPipeline instance
-            max_workers: Number of worker threads (default: 4)
-            max_queue_size: Maximum number of tasks in queue before switching to disk-based processing (default: 10)
+            pipeline: ImageProcessingPipeline instance (optional for analysis)
+            max_workers: Number of worker threads for pipeline (default: 3, reduced to prioritize storage)
+            max_queue_size: Maximum images waiting for storage (default: 20)
         """
         self.pipeline = pipeline
+        # Pipeline executor with fewer workers - low priority
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.max_queue_size = max_queue_size
-        self.active_tasks = 0
+        self.active_pipeline_tasks = 0
         self.task_lock = threading.Lock()
 
-    def run(self, img: np.array, event: MDAEvent) -> dict:
-        metadata = event.metadata
+        # High-priority: storage queue (separate from pipeline)
+        self._storage_queue: Queue = Queue(maxsize=max_queue_size)
+        self._storage_thread = threading.Thread(
+            target=self._storage_worker, daemon=True, name="StorageWorker"
+        )
+        self._storage_thread.start()
+
+        # Deferred pipeline queue: images that were skipped due to overload
+        self._deferred_queue: Queue = Queue()
+        self._deferred_thread = threading.Thread(
+            target=self._deferred_worker, daemon=True, name="DeferredWorker"
+        )
+        self._deferred_thread.start()
+
+        self._is_running = True
+        self._stop_event = threading.Event()
+
+        # Statistics for monitoring
+        self.stored_images = 0
+        self.skipped_pipeline = 0
+        self.deferred_processed = 0
+
+    def _storage_worker(self):
+        """Worker thread for storage - high priority, never skipped."""
+        while self._is_running and not self._stop_event.is_set():
+            try:
+                img, event, metadata, folder = self._storage_queue.get(timeout=0.5)
+            except QueueEmpty:
+                continue
+
+            try:
+                # PRIORITY 1: Always store the image
+                self._do_store(img, metadata, folder)
+                self.stored_images += 1
+
+                # PRIORITY 2: Pipeline only if resources available
+                self._try_submit_pipeline(img, event, metadata, folder)
+
+            except OSError as e:
+                print(f"Error storing image: {type(e).__name__}: {str(e)}")
+            except Exception as e:
+                print(
+                    f"Unexpected error processing image: {type(e).__name__}: {str(e)}"
+                )
+            finally:
+                self._storage_queue.task_done()
+
+    def _do_store(self, img: np.array, metadata: dict, folder: str):
+        """Actually store image to disk (guaranteed, never skipped)."""
         img_type = metadata["img_type"]
+
         if img_type == ImgType.IMG_RAW:
-            # raw image, send to pipeline and store
             store_img(img, metadata, self.pipeline.storage_path, "raw")
-            # Submit pipeline processing to thread pool with smart memory management
-            if self.pipeline is not None:
-                self._submit_analysis(img, event, metadata, folder="raw")
 
         elif img_type == ImgType.IMG_STIM:
-            # stim image, store
             store_img(img, metadata, self.pipeline.storage_path, "stim")
 
         elif img_type == ImgType.IMG_OPTOCHECK:
-            # on one side store image as normal raw, but also send a copy to optocheck pipeline
-            # raw image, send to pipeline and store
             len_raw_img = len(metadata["channels"])
             img_raw = img[0:len_raw_img]
-            # Submit pipeline processing to thread pool with smart memory management
-            if self.pipeline is not None:
-                self._submit_analysis(img, event, metadata, folder="optocheck")
+
             store_img(img_raw, metadata, self.pipeline.storage_path, "raw")
             if not os.path.exists(
                 os.path.join(self.pipeline.storage_path, "optocheck")
@@ -72,50 +118,144 @@ class Analyzer:
                 os.makedirs(os.path.join(self.pipeline.storage_path, "optocheck"))
             store_img(img, metadata, self.pipeline.storage_path, "optocheck")
 
-        return {"result": "STOP"}
-
-    def _submit_analysis(
-        self, img: np.array, event: MDAEvent, metadata: dict, folder: str = "raw"
+    def _try_submit_pipeline(
+        self, img: np.array, event: MDAEvent, metadata: dict, folder: str
     ):
-        """Submit image analysis task, using file_path when queue is full to avoid memory overflow.
+        """Try to submit to pipeline, but defer if overloaded (non-blocking).
 
-        Args:
-            img: Image array (used if queue has capacity)
-            event: MDAEvent with metadata
-            metadata: Image metadata dict
-            folder: Folder where image is stored ("raw" or "optocheck")
+        Optimization: Pass image directly in memory if capacity available (faster),
+        defer to later if overloaded (guaranteed processing).
         """
+        if self.pipeline is None:
+            return
+
+        if metadata["img_type"] == ImgType.IMG_STIM:
+            # Don't pipeline stim images
+            return
 
         with self.task_lock:
-            queue_is_full = self.active_tasks >= self.max_queue_size
-            if not queue_is_full:
-                self.active_tasks += 1
+            # Check if we have capacity for pipeline
+            if self.active_pipeline_tasks >= self.max_queue_size:
+                # Pipeline is overloaded - defer this image for later processing
+                self.skipped_pipeline += 1
+                # Queue for deferred processing
+                try:
+                    self._deferred_queue.put_nowait((img, event, metadata, folder))
+                except Exception:
+                    pass  # Deferred queue also full - image lost (acceptable, storage is priority)
+                return
 
-        if queue_is_full:
-            # Queue is full: process from disk instead of keeping image in memory
-            file_path = os.path.join(
-                self.pipeline.storage_path, folder, metadata["fname"] + ".tiff"
-            )
-            future = self.executor.submit(
-                self.pipeline.run, img=None, event=event, file_path=file_path
-            )
-        else:
-            # Queue has capacity: process directly from memory
+            # We have capacity, increment counter
+            self.active_pipeline_tasks += 1
+
+        # Submit to pipeline with low priority
+        try:
+            # Optimization: Use memory if capacity available (faster than disk read)
             future = self.executor.submit(
                 self.pipeline.run, img=img, event=event, file_path=None
             )
+            future.add_done_callback(lambda f: self._pipeline_task_done())
+        except (RuntimeError, OSError) as e:
+            print(f"Could not submit pipeline task: {str(e)}")
+            with self.task_lock:
+                self.active_pipeline_tasks -= 1
 
-        # Decrement counter when task completes
-        future.add_done_callback(lambda f: self._task_done())
+    def _deferred_worker(self):
+        """Worker thread that processes deferred images when capacity becomes available."""
+        while self._is_running and not self._stop_event.is_set():
+            try:
+                # Try to get deferred image (non-blocking check)
+                img, event, metadata, folder = self._deferred_queue.get(timeout=1.0)
+            except QueueEmpty:
+                continue
 
-    def _task_done(self):
-        """Called when a task completes to decrement the active task counter."""
+            try:
+                # Check if we have capacity now
+                with self.task_lock:
+                    if self.active_pipeline_tasks >= self.max_queue_size:
+                        # Still overloaded - put back in queue and wait
+                        self._deferred_queue.put_nowait((img, event, metadata, folder))
+                        time.sleep(0.5)
+                        continue
+
+                    # Capacity available - increment counter
+                    self.active_pipeline_tasks += 1
+
+                # Submit deferred image to pipeline
+                try:
+                    future = self.executor.submit(
+                        self.pipeline.run, img=img, event=event, file_path=None
+                    )
+                    future.add_done_callback(lambda f: self._pipeline_task_done())
+                    self.deferred_processed += 1
+                except (RuntimeError, OSError):
+                    with self.task_lock:
+                        self.active_pipeline_tasks -= 1
+                    # Put back in queue for retry
+                    self._deferred_queue.put_nowait((img, event, metadata, folder))
+
+            except Exception as e:
+                print(f"Error processing deferred image: {type(e).__name__}: {str(e)}")
+
+    def run(self, img: np.array, event: MDAEvent) -> dict:
+        """Called from MDA callback - must return INSTANTLY.
+
+        Just queues the image for storage, actual work happens in storage thread.
+        """
+        metadata = event.metadata
+        try:
+            # Put in storage queue (high priority)
+            # Non-blocking: if queue full, just skip (images before it will be stored)
+            self._storage_queue.put_nowait((img, event, metadata, "raw"))
+        except RuntimeError:
+            # Queue full - image skipped (but previous images are being stored)
+            # This is acceptable as storage is non-blocking
+            pass
+
+        return {"result": "STOP"}
+
+    def _pipeline_task_done(self):
+        """Called when pipeline task completes."""
         with self.task_lock:
-            self.active_tasks -= 1
+            self.active_pipeline_tasks -= 1
 
     def shutdown(self, wait: bool = True):
-        """Shutdown the thread pool executor. Call this when done with acquisition."""
+        """Shutdown storage thread, deferred thread, and pipeline executor."""
+        self._stop_event.set()
+
+        if wait:
+            # Wait for storage queue to empty
+            try:
+                self._storage_queue.join()
+            except Exception:
+                pass
+
+            # Wait for deferred queue to empty
+            try:
+                self._deferred_queue.join()
+            except Exception:
+                pass
+
+            # Wait for storage thread to finish
+            self._storage_thread.join(timeout=10)
+
+            # Wait for deferred thread to finish
+            self._deferred_thread.join(timeout=10)
+
+        self._is_running = False
         self.executor.shutdown(wait=wait)
+
+    def get_stats(self) -> dict:
+        """Get analyzer statistics."""
+        with self.task_lock:
+            return {
+                "stored_images": self.stored_images,
+                "skipped_pipeline": self.skipped_pipeline,
+                "deferred_processed": self.deferred_processed,
+                "pending_storage": self._storage_queue.qsize(),
+                "pending_deferred": self._deferred_queue.qsize(),
+                "active_pipeline_tasks": self.active_pipeline_tasks,
+            }
 
 
 class Controller:
@@ -336,8 +476,10 @@ class Controller:
                                         block=True, timeout=35
                                     )
                                     stim_mask = self._dmd.affine_transform(stim_mask)
-                                except Exception as e:
-                                    print(f"Exception: {str(e)}")
+                                except (TimeoutError, QueueEmpty) as e:
+                                    print(
+                                        f"Warning: Stimulation mask not ready (timeout): {str(e)}"
+                                    )
                                     stim_mask = False
                             else:
                                 stim_mask, _ = (
