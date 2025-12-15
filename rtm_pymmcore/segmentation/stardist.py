@@ -19,9 +19,10 @@ class SegmentatorStardist(Segmentator):
     def __init__(
         self,
         model: str = "2D_versatile_fluo",
+        model_path: str = None,
         norm_min: float = 1,
         norm_max: float = 99,
-        min_size: int = 50,
+        min_size: int = 0,
         prob_thresh=None,
     ):
         """
@@ -34,9 +35,11 @@ class SegmentatorStardist(Segmentator):
         min_size (int): The minimal object size. Defaults to 30. If 0, no filtering is performed.
 
         """
+        if model_path is None:
+            self.model = StarDist2D.from_pretrained(model)
+        else:
+            self.model = StarDist2D(None, name=model, basedir=model_path)
 
-        self.model = StarDist2D.from_pretrained(model)
-        # self.model.load_weights(model_path)
         self.norm_min = norm_min
         self.norm_max = norm_max
         self.min_size = min_size  # minimal object size
