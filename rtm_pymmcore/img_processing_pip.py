@@ -142,7 +142,7 @@ class ImageProcessingPipeline:
                 print("Attention df lost")
 
         filename_for_parquet = f"{metadata['fov']}_latest.parquet"
-        if "phase_id" or "phase_name" in metadata:
+        if "phase_id" in metadata or "phase_name" in metadata:
             metadata["fov_timestep"] = fov_obj.fov_timestep_counter
             filename_for_parquet = (
                 f"{metadata['fov']}_phase_{metadata['phase_id']}_latest.parquet"
@@ -162,7 +162,6 @@ class ImageProcessingPipeline:
                 segmentation_results[seg.name] = seg.segmentation_class.segment(
                     img[seg.use_channel, :, :]
                 )
-
         # if metadata["stim"] == True:
         #     stim_mask, labels_stim = self.stimulator.get_stim_mask(
         #         segmentation_results, metadata, img
