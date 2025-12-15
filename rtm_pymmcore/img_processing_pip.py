@@ -464,6 +464,7 @@ class ImageProcessingPipeline_postExperiment:
             else:
                 df_tracked = pd.concat([df_old, df_new], ignore_index=True)
             df_old = df_tracked
+            fov_obj.fov_timestep_counter += 1
 
             if (
                 self.feature_extractor_optocheck is not None
@@ -535,7 +536,32 @@ class ImageProcessingPipeline_postExperiment:
                     if not os.path.exists(dst_path):
                         os.link(src_path, dst_path)
 
-        df_tracked.drop(columns=["fov_object"], inplace=True)
+        if not df_tracked.empty:
+            df_tracked = df_tracked.drop(
+                columns=["fov_object", "img_type", "last_channel"], errors="ignore"
+            )
+
+        df_datatypes = {
+            "timestep": np.uint32,
+            "particle": np.uint32,
+            "label": np.uint32,
+            "time": np.float32,
+            "fov": np.uint16,
+            "stim_exposure": np.float32,
+        }
+
+        existing_columns = {
+            col: dtype
+            for col, dtype in df_datatypes.items()
+            if col in df_tracked.columns
+        }
+
+        try:
+            df_tracked = df_tracked.astype(existing_columns)
+        except ValueError as e:
+            print(e)
+            print("Error in converting datatypes. df_tracked:")
+
         filename_for_parquet = f"{metadata['fov']}_latest.parquet"
         if "phase_id" in metadata or "phase_name" in metadata:
             metadata["fov_timestep"] = fov_obj.fov_timestep_counter
