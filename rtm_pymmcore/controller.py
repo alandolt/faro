@@ -100,6 +100,14 @@ class Analyzer:
                         f"[Analyzer] Stored image type={metadata.get('img_type')} t={metadata.get('timestep')} fov={metadata.get('fov')} pending_storage={self._storage_queue.qsize()}"
                     )
 
+                if metadata.get("stim", False):
+                    if (
+                        not self.pipeline.stimulator.use_labels
+                        and self.pipeline.stimulator.use_imgs
+                    ):
+                        # stim mask does not require to use segmented cell labels.
+                        self._put_stim_mask_if_no_labels({}, metadata=metadata, img=img)
+
                 # PRIORITY 2: Pipeline only if resources available
                 self._try_submit_pipeline(img, event, metadata, folder)
 
@@ -132,6 +140,24 @@ class Analyzer:
             ):
                 os.makedirs(os.path.join(self.pipeline.storage_path, "optocheck"))
             store_img(img, metadata, self.pipeline.storage_path, "optocheck")
+
+    def _put_stim_mask_if_no_labels(
+        self, label_images: dict, metadata: dict, img: np.array
+    ) -> np.ndarray:
+        """Generate stimulation mask if stim mask does not use cell labels."""
+        if self.pipeline is None or self.pipeline.stimulator is None:
+            raise RuntimeError(
+                "No pipeline or stimulator defined for generating stim mask."
+            )
+        fov_obj = metadata.get("fov_object", None)
+        if fov_obj is None:
+            raise RuntimeError("No FOV object in metadata for generating stim mask.")
+        stim_mask, _ = self.pipeline.stimulator.get_stim_mask(
+            label_images, metadata=metadata, img=img
+        )
+        fov_obj.stim_mask_queue.put(stim_mask)
+
+        return
 
     def _try_submit_pipeline(
         self, img: np.array, event: MDAEvent, metadata: dict, folder: str
@@ -552,24 +578,29 @@ class Controller:
                         slm_image = None
 
                         if self._dmd is not None:
-                            if self._analyzer.pipeline.stimulator.use_labels:
+                            if (
+                                not self._analyzer.pipeline.stimulator.use_labels
+                                or not self._analyzer.pipeline.stimulator.use_imgs
+                            ):
+                                stim_mask, _ = (
+                                    self._analyzer.pipeline.stimulator.get_stim_mask(
+                                        {}, metadata=metadata_dict, img=None
+                                    )
+                                )
+                                stim_mask = self._dmd.affine_transform(stim_mask)
+                            else:
                                 try:
                                     stim_mask = fov_obj.stim_mask_queue.get(
                                         block=True, timeout=35
                                     )
                                     stim_mask = self._dmd.affine_transform(stim_mask)
+
                                 except (TimeoutError, QueueEmpty) as e:
                                     print(
                                         f"Warning: Stimulation mask not ready (timeout): {str(e)}"
                                     )
                                     stim_mask = False
-                            else:
-                                stim_mask, _ = (
-                                    self._analyzer.pipeline.stimulator.get_stim_mask(
-                                        {}, metadata=metadata_dict
-                                    )
-                                )
-                                stim_mask = self._dmd.affine_transform(stim_mask)
+
                             slm_image = SLMImage(
                                 data=stim_mask,
                                 device=self._dmd.name,

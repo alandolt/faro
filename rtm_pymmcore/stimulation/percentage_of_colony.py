@@ -6,6 +6,7 @@ from scipy import ndimage as ndi
 from skimage.morphology import disk
 import matplotlib.pyplot as plt
 
+
 class StimColonyPercentage(Stim):
     """
     Segment the colony using Convpaint and stimulate a left-to-right fraction
@@ -23,7 +24,7 @@ class StimColonyPercentage(Stim):
         self.model_name = model_name
         self.percentage_stimulated = float(percentage_stimulated)
         self.cpm = ConvpaintModel(model_path=os.path.join(path_to_model, model_name))
-
+        self.use_labels = False
 
     def segment_and_cleanup(self, img) -> np.ndarray:
         seg = self.cpm.segment(img)
@@ -40,7 +41,7 @@ class StimColonyPercentage(Stim):
                 raise ValueError("Segmentation contains only background (0).")
 
             largest_label = labels[nz][np.argmax(counts[nz])]
-            spot_mask = (seg_int == largest_label)
+            spot_mask = seg_int == largest_label
 
         # 2) keep largest connected component
         lab, n = ndi.label(spot_mask)
@@ -57,23 +58,24 @@ class StimColonyPercentage(Stim):
 
         return spot_mask.astype(bool)
 
-   
     def get_stim_mask(self, label_images: dict, metadata: dict, img: np.array = None):
 
         mask = self.segment_and_cleanup(img)
         percentage_stimulated_metadata = metadata.get("percentage_stimulated", None)
-        if percentage_stimulated_metadata is None and self.percentage_stimulated is not None:
+        if (
+            percentage_stimulated_metadata is None
+            and self.percentage_stimulated is not None
+        ):
             percentage_stimulated = self.percentage_stimulated
-        else: 
+        else:
             percentage_stimulated = float(percentage_stimulated_metadata)
-
 
         # mask: 2D boolean array
         ys, xs = np.nonzero(mask)
         if xs.size == 0:
             raise ValueError("Mask is empty.")
 
-        x_cut = np.quantile(xs, percentage_stimulated)         
+        x_cut = np.quantile(xs, percentage_stimulated)
         spot_mask = mask & (np.arange(mask.shape[1])[None, :] <= x_cut)
 
         return spot_mask, None
