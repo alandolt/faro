@@ -465,8 +465,6 @@ class Controller:
                         self._queue.put(acquisition_event)
 
                     slm_image = None
-                    if self._dmd is not None and self.dmd_needs_to_be_waken:
-                        slm_image = SLMImage(data=True, device=self._dmd.name)
 
                     for i, channel_i in enumerate(channels):
                         metadata_dict["last_channel"] = False
@@ -487,7 +485,14 @@ class Controller:
                         if any(el is None for el in power_prop):
                             power_prop = None
 
-                        # Use a per-event copy of metadata to avoid cross-event mutation/race
+                        exposure = channel_i.get("exposure")
+                        if self._dmd is not None and self.dmd_needs_to_be_waken:
+                            slm_image = SLMImage(
+                                data=True, device=self._dmd.name, exposure=exposure
+                            )
+                        else:
+                            slm_image = None
+
                         acquisition_event = useq.MDAEvent(
                             index={
                                 "t": timestep,
@@ -507,7 +512,7 @@ class Controller:
                             y_pos=y_pos,
                             z_pos=fov_z,
                             min_start_time=event_start_time,
-                            exposure=channel_i.get("exposure", None),
+                            exposure=exposure,
                             properties=[power_prop] if power_prop is not None else None,
                             slm_image=slm_image,
                         )
@@ -520,6 +525,7 @@ class Controller:
                         for i, optocheck_ch in enumerate(row["optocheck_channels"]):
                             last_channel: bool = i == len(row["optocheck_channels"]) - 1
                             metadata_dict["last_channel"] = last_channel
+                            exposure = optocheck_ch.get("exposure")
 
                             power_prop = (
                                 optocheck_ch.get("device_name", None),
@@ -529,7 +535,12 @@ class Controller:
                             if any(el is None for el in power_prop):
                                 power_prop = None
 
-                            # Use a per-event copy of metadata to avoid cross-event mutation/race
+                            if self._dmd is not None and self.dmd_needs_to_be_waken:
+                                slm_image = SLMImage(
+                                    data=True, device=self._dmd.name, exposure=exposure
+                                )
+                            else:
+                                slm_image = None
                             acquisition_event = useq.MDAEvent(
                                 index={
                                     "t": timestep,
@@ -549,7 +560,7 @@ class Controller:
                                 y_pos=None,
                                 z_pos=fov_z,
                                 min_start_time=event_start_time,
-                                exposure=optocheck_ch.get("exposure", None),
+                                exposure=exposure,
                                 properties=(
                                     [power_prop] if power_prop is not None else None
                                 ),
@@ -604,6 +615,7 @@ class Controller:
                             slm_image = SLMImage(
                                 data=stim_mask,
                                 device=self._dmd.name,
+                                exposure=stim_exposure,
                             )
 
                         # Use a per-event copy of metadata to avoid cross-event mutation/race
