@@ -85,20 +85,25 @@ class Niesen(AbstractMicroscope):
         self.mmc.displaySLMImage(self.slm_dev)
         self.mmc.setChannelGroup(channelGroup=self.DMD_CHANNEL_GROUP)
 
-    def calibrate_dmd(self, verbous=False,
+    def calibrate_dmd(
+        self,
+        verbose=False,
         n_points=15,
         radius=4,
         exposure=25,
         marker_style="x",
-        calibration_points_DMD=None,):
+        calibration_points_DMD=None,
+    ):
         "Calibrate the DMD if it is not already calibrated." ""
         if self.dmd is not None and self.dmd.affine is None:
-            self.dmd.calibrate(verbous=verbous,
+            self.dmd.calibrate(
+                verbose=verbose,
                 n_points=n_points,
                 radius=radius,
                 exposure=exposure,
                 marker_style=marker_style,
-                calibration_points_DMD=calibration_points_DMD,)
+                calibration_points_DMD=calibration_points_DMD,
+            )
 
     def run_experiment(self, df_acquire):
         """Run the experiment."""

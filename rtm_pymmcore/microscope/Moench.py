@@ -135,7 +135,7 @@ class Moench(AbstractMicroscope):
 
     def calibrate_dmd(
         self,
-        verbous=False,
+        verbose=False,
         n_points=15,
         radius=4,
         exposure=25,
@@ -148,7 +148,7 @@ class Moench(AbstractMicroscope):
         if self.dmd is not None and self.dmd.affine is None:
             self.wakeup_dmd.stop()
             self.dmd.calibrate(
-                verbose=verbous,
+                verbose=verbose,
                 n_points=n_points,
                 radius=radius,
                 exposure=exposure,
