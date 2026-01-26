@@ -21,6 +21,7 @@ class StimLine(Stim):
         mask_height=1024,
         mask_width=1024,
         use_labels=False,
+        use_imgs=False,
     ):
         super().__init__()
         self.first_stim_frame = first_stim_frame

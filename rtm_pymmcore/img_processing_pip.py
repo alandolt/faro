@@ -185,7 +185,7 @@ class ImageProcessingPipeline:
             stim_mask, _ = self.stimulator.get_stim_mask(
                 label_images=segmentation_results, metadata=metadata, img=img
             )
-            if self.stimulator.use_labels:
+            if self.stimulator.use_labels and not self.stimulator.use_imgs:
                 fov_obj.stim_mask_queue.put_nowait(stim_mask)
 
         if metadata["img_type"] == ImgType.IMG_OPTOCHECK:
@@ -581,8 +581,8 @@ class ImageProcessingPipeline_postExperiment:
         """
         Reduce the memory usage of a DataFrame by converting float64 to float32.
         """
-        float64_cols = df.select_dtypes(include='float64').columns
-        df[float64_cols] = df[float64_cols].astype('float32')
+        float64_cols = df.select_dtypes(include="float64").columns
+        df[float64_cols] = df[float64_cols].astype("float32")
         return df
 
     def concat_fovs(self):
@@ -599,4 +599,6 @@ class ImageProcessingPipeline_postExperiment:
 
         dfs = pd.concat(dfs)
         dfs = self.reduce_df_to_float32(dfs)
-        dfs.to_parquet(os.path.join(self.storage_path, "exp_data.parquet"), compression="zstd")
+        dfs.to_parquet(
+            os.path.join(self.storage_path, "exp_data.parquet"), compression="zstd"
+        )

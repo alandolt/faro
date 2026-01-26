@@ -13,6 +13,7 @@ class Stim:
 
     def __init__(self):
         self.use_labels = True
+        self.use_imgs = True
 
     def get_stim_mask(
         self, label_images: dict, metadata: dict, img: np.ndarray

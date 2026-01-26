@@ -100,6 +100,23 @@ class Analyzer:
                         f"[Analyzer] Stored image type={metadata.get('img_type')} t={metadata.get('timestep')} fov={metadata.get('fov')} pending_storage={self._storage_queue.qsize()}"
                     )
 
+                if metadata.get("stim", False):
+                    if (
+                        not self.pipeline.stimulator.use_labels
+                        and self.pipeline.stimulator.use_imgs
+                    ):
+                        img_type = metadata["img_type"]
+                        if img_type == ImgType.IMG_RAW:
+                            # stim mask does not require to use segmented cell labels.
+                            self._put_stim_mask_if_no_labels(
+                                {}, metadata=metadata, img=img
+                            )
+                        elif img_type == ImgType.IMG_OPTOCHECK:
+                            img_raw = self._optocheck_to_raw_img(img, metadata=metadata)
+                            self._put_stim_mask_if_no_labels(
+                                {}, metadata=metadata, img=img_raw
+                            )
+
                 # PRIORITY 2: Pipeline only if resources available
                 self._try_submit_pipeline(img, event, metadata, folder)
 
@@ -112,6 +129,10 @@ class Analyzer:
             finally:
                 self._storage_queue.task_done()
 
+    def _optocheck_to_raw_img(self, img: np.array, metadata: dict):
+        len_raw_img = len(metadata["channels"])
+        return img[0:len_raw_img]
+
     def _do_store(self, img: np.array, metadata: dict, folder: str):
         """Actually store image to disk (guaranteed, never skipped)."""
         img_type = metadata["img_type"]
@@ -123,8 +144,7 @@ class Analyzer:
             store_img(img, metadata, self.pipeline.storage_path, "stim")
 
         elif img_type == ImgType.IMG_OPTOCHECK:
-            len_raw_img = len(metadata["channels"])
-            img_raw = img[0:len_raw_img]
+            img_raw = self._optocheck_to_raw_img(img, metadata=metadata)
 
             store_img(img_raw, metadata, self.pipeline.storage_path, "raw")
             if not os.path.exists(
@@ -132,6 +152,24 @@ class Analyzer:
             ):
                 os.makedirs(os.path.join(self.pipeline.storage_path, "optocheck"))
             store_img(img, metadata, self.pipeline.storage_path, "optocheck")
+
+    def _put_stim_mask_if_no_labels(
+        self, label_images: dict, metadata: dict, img: np.array
+    ) -> np.ndarray:
+        """Generate stimulation mask if stim mask does not use cell labels."""
+        if self.pipeline is None or self.pipeline.stimulator is None:
+            raise RuntimeError(
+                "No pipeline or stimulator defined for generating stim mask."
+            )
+        fov_obj = metadata.get("fov_object", None)
+        if fov_obj is None:
+            raise RuntimeError("No FOV object in metadata for generating stim mask.")
+        stim_mask, _ = self.pipeline.stimulator.get_stim_mask(
+            label_images, metadata=metadata, img=img
+        )
+        fov_obj.stim_mask_queue.put(stim_mask)
+
+        return
 
     def _try_submit_pipeline(
         self, img: np.array, event: MDAEvent, metadata: dict, folder: str
@@ -360,13 +398,14 @@ class Controller:
     def _on_frame_ready(self, img: np.ndarray, event: MDAEvent) -> None:
         # Analyze the image
         self._frame_buffer.append(img)
-        try:
-            md = event.metadata or {}
-            print(
-                f"[Controller] frameReady: last_channel={md.get('last_channel')} img_type={md.get('img_type')} stack_size={len(self._frame_buffer)} fname={md.get('fname')}"
-            )
-        except Exception:
-            pass
+        if self._analyzer.debug:
+            try:
+                md = event.metadata or {}
+                print(
+                    f"[Controller] frameReady: last_channel={md.get('last_channel')} img_type={md.get('img_type')} stack_size={len(self._frame_buffer)} fname={md.get('fname')}"
+                )
+            except Exception:
+                pass
         # check if it's the last acquisition for this MDAsequence
         if event.metadata["last_channel"]:
             frame_complete = np.stack(self._frame_buffer, axis=-1)
@@ -439,8 +478,6 @@ class Controller:
                         self._queue.put(acquisition_event)
 
                     slm_image = None
-                    if self._dmd is not None and self.dmd_needs_to_be_waken:
-                        slm_image = SLMImage(data=True, device=self._dmd.name)
 
                     for i, channel_i in enumerate(channels):
                         metadata_dict["last_channel"] = False
@@ -461,7 +498,14 @@ class Controller:
                         if any(el is None for el in power_prop):
                             power_prop = None
 
-                        # Use a per-event copy of metadata to avoid cross-event mutation/race
+                        exposure = channel_i.get("exposure")
+                        if self._dmd is not None and self.dmd_needs_to_be_waken:
+                            slm_image = SLMImage(
+                                data=True, device=self._dmd.name, exposure=exposure
+                            )
+                        else:
+                            slm_image = None
+
                         acquisition_event = useq.MDAEvent(
                             index={
                                 "t": timestep,
@@ -481,7 +525,7 @@ class Controller:
                             y_pos=y_pos,
                             z_pos=fov_z,
                             min_start_time=event_start_time,
-                            exposure=channel_i.get("exposure", None),
+                            exposure=exposure,
                             properties=[power_prop] if power_prop is not None else None,
                             slm_image=slm_image,
                         )
@@ -494,6 +538,7 @@ class Controller:
                         for i, optocheck_ch in enumerate(row["optocheck_channels"]):
                             last_channel: bool = i == len(row["optocheck_channels"]) - 1
                             metadata_dict["last_channel"] = last_channel
+                            exposure = optocheck_ch.get("exposure")
 
                             power_prop = (
                                 optocheck_ch.get("device_name", None),
@@ -503,7 +548,12 @@ class Controller:
                             if any(el is None for el in power_prop):
                                 power_prop = None
 
-                            # Use a per-event copy of metadata to avoid cross-event mutation/race
+                            if self._dmd is not None and self.dmd_needs_to_be_waken:
+                                slm_image = SLMImage(
+                                    data=True, device=self._dmd.name, exposure=exposure
+                                )
+                            else:
+                                slm_image = None
                             acquisition_event = useq.MDAEvent(
                                 index={
                                     "t": timestep,
@@ -523,7 +573,7 @@ class Controller:
                                 y_pos=None,
                                 z_pos=fov_z,
                                 min_start_time=event_start_time,
-                                exposure=optocheck_ch.get("exposure", None),
+                                exposure=exposure,
                                 properties=(
                                     [power_prop] if power_prop is not None else None
                                 ),
@@ -552,27 +602,33 @@ class Controller:
                         slm_image = None
 
                         if self._dmd is not None:
-                            if self._analyzer.pipeline.stimulator.use_labels:
+                            if (
+                                not self._analyzer.pipeline.stimulator.use_labels
+                                and not self._analyzer.pipeline.stimulator.use_imgs
+                            ):
+                                stim_mask, _ = (
+                                    self._analyzer.pipeline.stimulator.get_stim_mask(
+                                        {}, metadata=metadata_dict, img=None
+                                    )
+                                )
+                                stim_mask = self._dmd.affine_transform(stim_mask)
+                            else:
                                 try:
                                     stim_mask = fov_obj.stim_mask_queue.get(
-                                        block=True, timeout=35
+                                        block=True, timeout=80
                                     )
                                     stim_mask = self._dmd.affine_transform(stim_mask)
+
                                 except (TimeoutError, QueueEmpty) as e:
                                     print(
                                         f"Warning: Stimulation mask not ready (timeout): {str(e)}"
                                     )
                                     stim_mask = False
-                            else:
-                                stim_mask, _ = (
-                                    self._analyzer.pipeline.stimulator.get_stim_mask(
-                                        {}, metadata=metadata_dict
-                                    )
-                                )
-                                stim_mask = self._dmd.affine_transform(stim_mask)
+
                             slm_image = SLMImage(
                                 data=stim_mask,
                                 device=self._dmd.name,
+                                exposure=stim_exposure,
                             )
 
                         # Use a per-event copy of metadata to avoid cross-event mutation/race
