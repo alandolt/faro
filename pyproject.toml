@@ -19,6 +19,7 @@ dependencies = [
     "trackpy",
     "napari-micromanager",
     "imaging-server-kit",
+    "pyqt5-qt5 <=5.15.2",
 ]
 
 [project.optional-dependencies]
@@ -38,9 +39,13 @@ cellpose = [
     ]
 
 convpaint = [
-    "napari-convpaint", 
+    "napari-convpaint",
     "scipy"
-]
+    ]
+
+gpax = [
+    "gpax"
+    ]
 
 
 [tool.uv.sources]
