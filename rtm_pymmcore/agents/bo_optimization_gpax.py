@@ -154,9 +154,64 @@ class BOptGPAX(Agent):
         self.ei_num_samples = int(ei_num_samples)
         self.ei_noiseless = bool(ei_noiseless)
 
+        # Penalty settings for discouraging re-evaluation at recent points
+        self.penalty = None  # Options: None, 'delta', 'inverse_distance'
+        self.penalty_factor = 1.0  # Strength of penalty for 'inverse_distance'
+
         # Tracks which acquisition was actually used in the most recent BO round
         # (can differ from self.acquisition_function if we fall back).
         self._acquisition_used_this_round = self.acquisition_function
+
+    def _apply_penalty(
+        self,
+        acq: jnp.ndarray,
+        x_scaled: jnp.ndarray,
+        recent_points: np.ndarray,
+        penalty: str,
+        penalty_factor: float,
+    ) -> jnp.ndarray:
+        """Apply penalty to acquisition function based on recent points.
+
+        Args:
+            acq: Acquisition function values
+            x_scaled: Scaled input points where acquisition was computed
+            recent_points: Recently evaluated points (unscaled)
+            penalty: Type of penalty ('delta' or 'inverse_distance')
+            penalty_factor: Strength of penalty for 'inverse_distance'
+
+        Returns:
+            Penalized acquisition values
+        """
+        # Scale recent points using the same scaler
+        recent_scaled = jnp.asarray(recent_points)
+
+        if penalty == "delta":
+            # Infinite penalty for exactly matching points
+            # For each recent point, set acquisition to -inf for matches
+            for rp in recent_scaled:
+                # Check if any point matches (within numerical tolerance)
+                distances = jnp.linalg.norm(x_scaled - rp, axis=1)
+                mask = distances < 1e-8  # Very small tolerance for "exact" match
+                acq = jnp.where(mask, -jnp.inf, acq)
+
+        elif penalty == "inverse_distance":
+            # Penalty based on distance to nearest recent point
+            # For each candidate point, find minimum distance to any recent point
+            min_distances = jnp.full(x_scaled.shape[0], jnp.inf)
+
+            for rp in recent_scaled:
+                distances = jnp.linalg.norm(x_scaled - rp, axis=1)
+                min_distances = jnp.minimum(min_distances, distances)
+
+            # Penalty term: higher penalty for closer points
+            # Add small epsilon to avoid division by zero
+            epsilon = 1e-6
+            penalty_term = 1.0 / (min_distances + epsilon)
+
+            # Apply penalty: acq_penalized = acq / (1 + penalty_factor * penalty_term)
+            acq = acq / (1.0 + penalty_factor * penalty_term)
+
+        return acq
 
     def _is_flat_acquisition(self, acq_values, range_tol: float = 1e-6) -> bool:
         acq = jnp.asarray(acq_values)
@@ -260,12 +315,21 @@ class BOptGPAX(Agent):
         maximize: bool,
         batch_size=1000,
         xi: float = 0.0,
+        penalty: Optional[str] = None,
+        recent_points: Optional[np.ndarray] = None,
+        penalty_factor: float = 1.0,
     ):
         """Expected Improvement aligned with GPax EI formula.
 
         GPax uses mean/variance of the predictive distribution:
         EI = sigma * (phi(u) + u * Phi(u)), with u = (mean - best_f) / sigma.
         We estimate mean/var from posterior samples to match GPax's HMC handling.
+
+        Args:
+            penalty: Penalty type ('delta' or 'inverse_distance') to discourage re-evaluation
+                     at or near recently evaluated points.
+            recent_points: Array of recently evaluated points (scaled coordinates).
+            penalty_factor: Factor controlling penalty strength for 'inverse_distance'.
         """
         mean_pred, y_sampled = gp_model.predict_in_batches(
             rng_key,
@@ -289,7 +353,15 @@ class BOptGPAX(Agent):
             u = -u
 
         ei = sigma * (jnorm.pdf(u) + u * jnorm.cdf(u))
-        return jnp.where(jnp.isfinite(ei), ei, 0.0)
+        ei = jnp.where(jnp.isfinite(ei), ei, 0.0)
+
+        # Apply penalty if specified
+        if penalty is not None and recent_points is not None and len(recent_points) > 0:
+            ei = self._apply_penalty(
+                ei, x_scaled, recent_points, penalty, penalty_factor
+            )
+
+        return ei
 
     def _compute_mc_ucb(
         self,
@@ -299,8 +371,18 @@ class BOptGPAX(Agent):
         maximize: bool,
         beta: float = 4.0,
         batch_size=1000,
+        penalty: Optional[str] = None,
+        recent_points: Optional[np.ndarray] = None,
+        penalty_factor: float = 1.0,
     ):
-        """Monte-Carlo UCB aligned with GPax formula using posterior mean/variance."""
+        """Monte-Carlo UCB aligned with GPax formula using posterior mean/variance.
+
+        Args:
+            penalty: Penalty type ('delta' or 'inverse_distance') to discourage re-evaluation
+                     at or near recently evaluated points.
+            recent_points: Array of recently evaluated points (scaled coordinates).
+            penalty_factor: Factor controlling penalty strength for 'inverse_distance'.
+        """
         mean_pred, y_sampled = gp_model.predict_in_batches(
             rng_key,
             x_scaled,
@@ -316,7 +398,15 @@ class BOptGPAX(Agent):
         var = jnp.var(y_sampled, axis=(0, 1))
         delta = jnp.sqrt(beta * var)
         ucb = mean + delta if maximize else -(mean - delta)
-        return jnp.where(jnp.isfinite(ucb), ucb, 0.0)
+        ucb = jnp.where(jnp.isfinite(ucb), ucb, 0.0)
+
+        # Apply penalty if specified
+        if penalty is not None and recent_points is not None and len(recent_points) > 0:
+            ucb = self._apply_penalty(
+                ucb, x_scaled, recent_points, penalty, penalty_factor
+            )
+
+        return ucb
 
     def _compute_robust_acq(
         self, rng_key, gp_model, x_grid, c_samples, x_scaler, y_scaled, batch_size=1000
@@ -362,12 +452,18 @@ class BOptGPAX(Agent):
         # 4. Compute Acquisition: Monte-Carlo EI/UCB from posterior samples
         n_total = x_full_batch_scaled.shape[0]
         print(
-            f"Computing robust acquisition over {n_total} scenarios ({n_grid} grid points × {n_mc} covariate samples)..."
+            f"Computing robust acquisition over {n_total} scenarios ({n_grid} grid points x {n_mc} covariate samples)..."
         )
 
         maximize = self.objective_metric.goal == "maximize"
         best_f_scaled = jnp.max(y_scaled) if maximize else jnp.min(y_scaled)
         print(f"  best_f (scaled): {float(best_f_scaled):.6f}")
+
+        # Get recent points for penalty (only controllable parameters, not covariates)
+        recent_ctrl = None
+        if self.penalty is not None and self.x_performed_experiments is not None:
+            n_ctrl_params = len(self.parameters_to_optimize)
+            recent_ctrl = self.x_performed_experiments[:, :n_ctrl_params]
 
         if self.acquisition_function == "ei":
             all_acq_values = self._compute_mc_ei(
@@ -378,6 +474,9 @@ class BOptGPAX(Agent):
                 maximize=maximize,
                 batch_size=batch_size,
                 xi=self.ei_xi,
+                penalty=self.penalty,
+                recent_points=recent_ctrl,
+                penalty_factor=self.penalty_factor,
             )
         else:
             all_acq_values = self._compute_mc_ucb(
@@ -387,6 +486,9 @@ class BOptGPAX(Agent):
                 maximize=maximize,
                 beta=self.ucb_beta,
                 batch_size=batch_size,
+                penalty=self.penalty,
+                recent_points=recent_ctrl,
+                penalty_factor=self.penalty_factor,
             )
 
         print(
@@ -512,6 +614,13 @@ class BOptGPAX(Agent):
             # No covariates: acquisition on controllable grid directly
             x_total_scaled = x_scaler.transform(x_grid_ctrl)
             maximize = self.objective_metric.goal == "maximize"
+
+            # Get recent points for penalty
+            recent_ctrl = None
+            if self.penalty is not None and self.x_performed_experiments is not None:
+                n_ctrl_params = len(self.parameters_to_optimize)
+                recent_ctrl = self.x_performed_experiments[:, :n_ctrl_params]
+
             if self.acquisition_function == "ei":
                 best_f_scaled = jnp.max(y) if maximize else jnp.min(y)
                 acq_values_total = self._compute_mc_ei(
@@ -522,6 +631,9 @@ class BOptGPAX(Agent):
                     maximize=maximize,
                     batch_size=1000,
                     xi=self.ei_xi,
+                    penalty=self.penalty,
+                    recent_points=recent_ctrl,
+                    penalty_factor=self.penalty_factor,
                 )
 
                 if self._is_flat_acquisition(acq_values_total, range_tol=1e-6):
@@ -536,6 +648,9 @@ class BOptGPAX(Agent):
                         maximize=maximize,
                         beta=self.ucb_beta,
                         batch_size=1000,
+                        penalty=self.penalty,
+                        recent_points=recent_ctrl,
+                        penalty_factor=self.penalty_factor,
                     )
             else:
                 acq_values_total = self._compute_mc_ucb(
@@ -545,6 +660,9 @@ class BOptGPAX(Agent):
                     maximize=maximize,
                     beta=self.ucb_beta,
                     batch_size=1000,
+                    penalty=self.penalty,
+                    recent_points=recent_ctrl,
+                    penalty_factor=self.penalty_factor,
                 )
             x_total_with_cov = x_grid_ctrl
 
@@ -573,6 +691,12 @@ class BOptGPAX(Agent):
             # For plotting we need acquisition values on the *full* controllable grid,
             # because _plot_mock_example reshapes into (len(unique_x1), len(unique_x2)).
             x_plot_ctrl = self.x_total_linespace.copy()
+
+            # Get recent points for penalty (for plotting)
+            recent_ctrl_plot = None
+            if self.penalty is not None and self.x_performed_experiments is not None:
+                n_ctrl_params = len(self.parameters_to_optimize)
+                recent_ctrl_plot = self.x_performed_experiments[:, :n_ctrl_params]
 
             if len(self.bo_covariates) > 0:
                 if acquisition_used == "ucb":
@@ -612,6 +736,9 @@ class BOptGPAX(Agent):
                         maximize=maximize,
                         batch_size=1000,
                         xi=self.ei_xi,
+                        penalty=self.penalty,
+                        recent_points=recent_ctrl_plot,
+                        penalty_factor=self.penalty_factor,
                     )
                 else:
                     acq_values_plot = self._compute_mc_ucb(
@@ -621,6 +748,9 @@ class BOptGPAX(Agent):
                         maximize=maximize,
                         beta=self.ucb_beta,
                         batch_size=1000,
+                        penalty=self.penalty,
+                        recent_points=recent_ctrl_plot,
+                        penalty_factor=self.penalty_factor,
                     )
                 x_plot_with_cov = x_plot_ctrl
 
@@ -633,6 +763,7 @@ class BOptGPAX(Agent):
                 x_plot_with_cov,
                 acq_values_plot,
                 next_parameters,
+                x_unmeasured_at_computation=x_grid_ctrl,
             )
 
         return next_parameters_dict
@@ -647,6 +778,7 @@ class BOptGPAX(Agent):
         x_total_with_cov,
         acq_values_total,
         next_point: Optional[np.ndarray] = None,
+        x_unmeasured_at_computation: Optional[np.ndarray] = None,
     ):
         """Plot measured data, model predictions, and acquisition function.
 
@@ -810,12 +942,37 @@ class BOptGPAX(Agent):
         # Normalize acquisition for better visualization
         # acq_norm = (acq_2d - acq_2d.min()) / (acq_2d.max() - acq_2d.min() + 1e-10)
         im3 = ax3.pcolormesh(X_mesh, Y_mesh, acq_2d, cmap="coolwarm", shading="nearest")
+
+        # Mark already measured points
+        if (
+            self.x_performed_experiments is not None
+            and len(self.x_performed_experiments) > 0
+        ):
+            ax3.scatter(
+                self.x_performed_experiments[:, 0],
+                self.x_performed_experiments[:, 1],
+                c="gray",
+                s=80,
+                marker="x",
+                linewidths=2,
+                label="Already measured",
+                alpha=0.6,
+                zorder=2,
+            )
+
         # Mark the point with highest acquisition among unmeasured points
-        if self.x_unmeasured is not None and len(self.x_unmeasured) > 0:
+        # Use x_unmeasured_at_computation if provided, otherwise fall back to self.x_unmeasured
+        x_unmeasured_for_plot = (
+            x_unmeasured_at_computation
+            if x_unmeasured_at_computation is not None
+            else self.x_unmeasured
+        )
+
+        if x_unmeasured_for_plot is not None and len(x_unmeasured_for_plot) > 0:
             x1_to_i = {v: i for i, v in enumerate(unique_x1)}
             x2_to_j = {v: j for j, v in enumerate(unique_x2)}
             mask = np.zeros_like(acq_2d, dtype=bool)
-            for x1_u, x2_u in self.x_unmeasured:
+            for x1_u, x2_u in x_unmeasured_for_plot:
                 i = x1_to_i.get(x1_u)
                 j = x2_to_j.get(x2_u)
                 if i is not None and j is not None:
@@ -901,16 +1058,17 @@ class BOptGPAX(Agent):
         ax4.set_title(f"Ground Truth (cov={cov_mean:.2f})")
         ax4.grid(True, alpha=0.3)
 
+        # Add some spacing between subplots before adding colorbar
+        plt.subplots_adjust(right=0.92)
+
         # Shared colorbar for subplots 1, 2, 4 (y values)
+        cbar_ax = fig.add_axes([0.94, 0.15, 0.02, 0.7])
         fig.colorbar(
             scatter if not df_results.empty else im2,
-            ax=[ax1, ax2, ax4],
+            cax=cbar_ax,
             label=self.objective_metric.name,
-            fraction=0.046,
-            pad=0.04,
         )
 
-        plt.tight_layout()
         plt.show()
 
     def _create_df_acquire_for_exp_cycle(self, parameters: dict) -> pd.DataFrame:
@@ -919,6 +1077,9 @@ class BOptGPAX(Agent):
 
     def run(self):
         df_results = pd.DataFrame()
+
+        # initial exploration
+        X_init, _ = self._select_initial_samples(k=3)
         for _ in range(self.n_iterations):
             next_params = self._determine_next_parameters(df_results)
             df_acquire = self._create_df_acquire_for_exp_cycle(next_params)
