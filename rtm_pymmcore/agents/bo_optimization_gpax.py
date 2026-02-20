@@ -1,4 +1,5 @@
 from rtm_pymmcore.agents.abstract_agent import Agent
+from abc import abstractmethod
 import pandas as pd
 import dataclasses
 from typing import List, Optional
@@ -107,7 +108,6 @@ class StandardScalerBounds:
 class BOptGPAX(Agent):
     def __init__(
         self,
-        pipeline,
         microscope,
         parameters_to_optimize: List[BO_Parameter],
         objective_metric: BO_Objective,
@@ -125,7 +125,6 @@ class BOptGPAX(Agent):
         self.n_iterations = n_iterations
         self.iteration = 0
         self.microscope = microscope
-        self.pipeline = pipeline
         self.parameters_to_optimize = parameters_to_optimize
         self.objective_metric = objective_metric
         self.model = None  # Placeholder for the GP model
@@ -304,7 +303,17 @@ class BOptGPAX(Agent):
             if self.x_performed_experiments is not None
             else X_selected
         )
-        return X_selected, selected_indices
+
+        selected_parameter_dicts = []
+        for selected_row in np.asarray(X_selected):
+            selected_parameter_dicts.append(
+                {
+                    param.name: selected_row[i]
+                    for i, param in enumerate(self.parameters_to_optimize)
+                }
+            )
+
+        return selected_parameter_dicts, selected_indices
 
     def _compute_mc_ei(
         self,
@@ -1071,21 +1080,42 @@ class BOptGPAX(Agent):
 
         plt.show()
 
+    @abstractmethod
     def _create_df_acquire_for_exp_cycle(self, parameters: dict) -> pd.DataFrame:
-        # Implementation of creating df_acquire for experiment cycle
-        return pd.DataFrame()  # Placeholder implementation
+        pass
+
+    @abstractmethod
+    def _run_experiment_and_preprocess_results(
+        self, df_acquire: pd.DataFrame
+    ) -> pd.DataFrame:
+        # needs to be implemented by user to run experiment based on df_acquire and preprocess results into df_results format
+        # Implementation of running experiment and preprocessing results
+        pass
 
     def run(self):
         df_results = pd.DataFrame()
 
-        # initial exploration
-        X_init, _ = self._select_initial_samples(k=3)
-        for _ in range(self.n_iterations):
-            next_params = self._determine_next_parameters(df_results)
-            df_acquire = self._create_df_acquire_for_exp_cycle(next_params)
-            self.microscope.run_experiment(df_acquire)
-            df_new_results = self.pipeline.get_results_dataframe()
+        initial_parameters, _ = self._select_initial_samples(k=3)
+
+        # _select_initial_samples returns a list of parameter dicts.
+        # Keep _create_df_acquire_for_exp_cycle API as a single-point call
+        # and concatenate the initial acquisitions.
+        if isinstance(initial_parameters, dict):
+            initial_parameters = [initial_parameters]
+
+        for i, params in enumerate(initial_parameters):
+            print(f"=== Initial sample {i + 1}/{len(initial_parameters)}: {params} ===")
+            df_acquisition = self._create_df_acquire_for_exp_cycle(params)
+            df_new_results = self._run_experiment_and_preprocess_results(df_acquisition)
             df_results = pd.concat([df_results, df_new_results], ignore_index=True)
+
+        for e in range(self.n_iterations):
+            print(f"\n=== BO Iteration {e + 1}/{self.n_iterations} ===")
+            next_params = self._determine_next_parameters(df_results)
+            print(f"Selected parameters for next experiment: {next_params}")
+            new_df_acquire = self._create_df_acquire_for_exp_cycle(next_params)
+            new_df_results = self._run_experiment_and_preprocess_results(new_df_acquire)
+            df_results = pd.concat([df_results, new_df_results], ignore_index=True)
             self.iteration += 1
 
 
