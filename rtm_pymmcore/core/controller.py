@@ -576,17 +576,19 @@ class Controller:
             acquire → wait for mask → stim  (within the same timepoint)
 
         ``stim_mode="previous"``
-            stim with mask from *previous* timepoint → acquire
-            (mask was computed in the background; first stim frame is skipped)
+            stim (mask from t-1) → acquire t  (pipeline processes t in background)
+            When revisiting the FOV at t+1, the mask from t is collected
+            (blocking if not yet ready).  The first stim frame per FOV is
+            skipped (no previous mask exists).
         """
         from rtm_pymmcore.core.data_structures import ImgType as _IT
 
         queue_sequence = iter(self._queue.get, self.STOP_EVENT)
         mda_thread = self._mmc.run_mda(queue_sequence)
 
-        # For "previous" mode: cache the last SLMImage per FOV index
-        # so we can apply it at the *next* stim-eligible timepoint.
-        prev_stim_slm: dict[int, SLMImage] = {}
+        # For "previous" mode: track which FOVs have had a stim frame
+        # queued so we know when to expect a mask from the pipeline.
+        _stim_pending: set[int] = set()
 
         try:
             for rtm_event in events:
@@ -607,42 +609,47 @@ class Controller:
 
                 if stim_mode == "previous":
                     # --- "previous" mode ---
-                    # 1. Stim first (using mask from previous frame)
-                    if has_stim and stim_events and fov_index in prev_stim_slm:
-                        slm = prev_stim_slm[fov_index]
-                        for ev in stim_events:
-                            ev = ev.model_copy(update={"slm_image": slm})
-                            self._put_event(ev)
+                    # Stim with mask from t-1, then acquire t.
+                    # The pipeline processes t in the background; its mask
+                    # is collected the next time we visit this FOV.
 
-                    # 2. Queue imaging events
-                    for ev in img_events:
-                        self._put_event(ev)
-
-                    # 3. If this frame has stim, kick off mask computation
-                    #    in background — it will be ready by the time we
-                    #    return to this FOV for the next timepoint.
-                    if has_stim and self._dmd:
+                    # 1. Stim (mask from previous frame)
+                    if has_stim and stim_events and self._dmd:
                         stimulator = self._analyzer.pipeline.stimulator
                         if not stimulator.use_labels and not stimulator.use_imgs:
                             # No pipeline dependency — compute immediately
-                            prev_stim_slm[fov_index] = self._build_stim_slm(rtm_event)
-                        else:
-                            # Pipeline will produce the mask asynchronously.
-                            # Try a non-blocking get: if a mask from the
-                            # *previous* pipeline run is already available,
-                            # grab it.  Otherwise we'll pick it up next time.
+                            slm = self._build_stim_slm(rtm_event)
+                            for ev in stim_events:
+                                ev = ev.model_copy(update={"slm_image": slm})
+                                self._put_event(ev)
+                        elif fov_index in _stim_pending:
+                            # A previous frame was queued for this FOV —
+                            # block until its mask is ready (must be from t-1).
                             fov_state = self._analyzer.get_fov_state(fov_index)
                             try:
-                                stim_mask = fov_state.stim_mask_queue.get_nowait()
+                                stim_mask = fov_state.stim_mask_queue.get(
+                                    block=True, timeout=80
+                                )
                                 stim_mask = self._dmd.affine_transform(stim_mask)
                                 stim_ch = rtm_event.stim_channels[0]
-                                prev_stim_slm[fov_index] = SLMImage(
+                                slm = SLMImage(
                                     data=stim_mask,
                                     device=self._dmd.name,
                                     exposure=stim_ch.exposure,
                                 )
-                            except Exception:
-                                pass  # mask not ready yet — will use it next time
+                                for ev in stim_events:
+                                    ev = ev.model_copy(update={"slm_image": slm})
+                                    self._put_event(ev)
+                            except Exception as e:
+                                print(f"Warning: Stimulation mask not ready (timeout): {e}")
+                        # else: first stim frame for this FOV — skip (no previous mask)
+
+                    # 2. Queue imaging events (never blocks)
+                    for ev in img_events:
+                        self._put_event(ev)
+
+                    if has_stim:
+                        _stim_pending.add(fov_index)
 
                 else:
                     # --- "current" mode (default) ---

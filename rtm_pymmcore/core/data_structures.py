@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 import queue
 from dataclasses import dataclass
 import enum
+from typing import Any, Iterator
 import numpy as np
 import pandas as pd
+from pydantic import Field
 from rtm_pymmcore.segmentation.base import Segmentator
 from dataclasses import dataclass, InitVar
 
@@ -130,8 +134,9 @@ class ImgType(enum.Enum):
 # ---------------------------------------------------------------------------
 # RTMEvent — extended MDAEvent with multi-channel + stimulation support
 # ---------------------------------------------------------------------------
-from useq import MDAEvent
+from useq import MDAEvent, MDASequence
 from useq._mda_event import SLMImage
+from useq._mda_sequence import iter_sequence
 
 
 class RTMEvent(MDAEvent):
@@ -230,3 +235,114 @@ class RTMEvent(MDAEvent):
                 ))
 
         return events
+
+
+# ---------------------------------------------------------------------------
+# RTMSequence — MDASequence subclass with stimulation support
+# ---------------------------------------------------------------------------
+
+
+class RTMSequence(MDASequence):
+    """MDASequence with stimulation and pipeline metadata.
+
+    Iterating yields RTMEvent objects (not plain MDAEvents).
+    Concatenate multiple sequences with ``+`` for multi-phase experiments.
+    """
+
+    stim_channels: tuple[Channel, ...] = ()
+    stim_frames: set[int] | frozenset[int] = Field(default_factory=frozenset)
+    rtm_metadata: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {**MDASequence.model_config, "arbitrary_types_allowed": True}
+
+    def __iter__(self) -> Iterator[RTMEvent]:
+        """Yield RTMEvents (overrides MDASequence.__iter__)."""
+        return self.iter_events()
+
+    def iter_events(self) -> Iterator[RTMEvent]:
+        """Yield RTMEvents by grouping parent MDAEvents by (t, p)."""
+        groups: dict[tuple, dict] = {}
+        for mda_ev in iter_sequence(self):
+            t = mda_ev.index.get("t", 0)
+            p = mda_ev.index.get("p", 0)
+            key = (t, p)
+            if key not in groups:
+                groups[key] = {
+                    "channels": [],
+                    "x_pos": mda_ev.x_pos,
+                    "y_pos": mda_ev.y_pos,
+                    "z_pos": mda_ev.z_pos,
+                    "min_start_time": mda_ev.min_start_time,
+                }
+            if mda_ev.channel:
+                ch_name = mda_ev.channel.config
+                groups[key]["channels"].append(
+                    Channel(name=ch_name, exposure=mda_ev.exposure or 0)
+                )
+
+        merged_meta = {**self.metadata, **self.rtm_metadata}
+        stim_set = set(self.stim_frames)
+        stim_tuple = tuple(self.stim_channels)
+
+        for (t, p), grp in sorted(groups.items()):
+            stim = stim_tuple if stim_tuple and t in stim_set else ()
+            yield RTMEvent(
+                index={"t": t, "p": p},
+                channels=tuple(grp["channels"]),
+                stim_channels=stim,
+                x_pos=grp["x_pos"],
+                y_pos=grp["y_pos"],
+                z_pos=grp["z_pos"],
+                min_start_time=grp["min_start_time"],
+                metadata=merged_meta,
+            )
+
+    @staticmethod
+    def _offset_events(
+        events_a: list[RTMEvent], events_b: list[RTMEvent],
+    ) -> list[RTMEvent]:
+        """Append *events_b* to *events_a* with offset timepoints and times."""
+        if not events_a:
+            return list(events_b)
+        if not events_b:
+            return list(events_a)
+
+        max_t = max(e.index.get("t", 0) for e in events_a) + 1
+        max_time = max(e.min_start_time or 0 for e in events_a)
+        if len(events_b) >= 2:
+            dt = (events_b[1].min_start_time or 0) - (
+                events_b[0].min_start_time or 0
+            )
+        else:
+            dt = 1.0
+        time_offset = max_time + dt
+
+        result = list(events_a)
+        for ev in events_b:
+            new_t = ev.index.get("t", 0) + max_t
+            new_time = (ev.min_start_time or 0) + time_offset
+            result.append(
+                ev.model_copy(
+                    update={
+                        "index": {**dict(ev.index), "t": new_t},
+                        "min_start_time": new_time,
+                    }
+                )
+            )
+        return result
+
+    def __add__(self, other: RTMSequence | list[RTMEvent]) -> list[RTMEvent]:
+        """Concatenate two RTMSequences (or an RTMSequence and an event list).
+
+        Timepoints in ``other`` are offset so they continue after ``self``.
+        ``min_start_time`` is also offset by the last event's time + interval.
+        """
+        events_a = list(self)
+        events_b = list(other)
+        return self._offset_events(events_a, events_b)
+
+    def __radd__(self, other: list[RTMEvent]) -> list[RTMEvent]:
+        """Support ``list[RTMEvent] + RTMSequence``."""
+        if isinstance(other, list):
+            return self._offset_events(other, list(self))
+        return NotImplemented

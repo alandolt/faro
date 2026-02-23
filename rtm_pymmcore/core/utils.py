@@ -28,6 +28,107 @@ def print_configs(mmc):
     Console().print(tree)
 
 
+def validate_hardware(events, mmc) -> bool:
+    """Validate that event channels exist on the microscope and params are in range.
+
+    Checks:
+    1. All channel configs (imaging + stim) exist in a config group.
+    2. Exposure values are within the camera's allowed range.
+    3. Device property values (e.g. laser power) are within device limits.
+
+    Returns True if all checks pass, False otherwise.
+    Emits warnings for every problem found.
+    """
+    import warnings
+
+    problems: list[str] = []
+
+    # Build map: config_name → [group, ...]
+    available: dict[str, list[str]] = {}
+    for group in mmc.getAvailableConfigGroups():
+        for config in mmc.getAvailableConfigs(group):
+            available.setdefault(config, []).append(group)
+
+    # Collect unique channels across all events
+    seen: dict[str, tuple] = {}  # name → (Channel, "imaging"|"stim")
+    for event in events:
+        for ch in event.channels:
+            if ch.name not in seen:
+                seen[ch.name] = (ch, "imaging")
+        for ch in event.stim_channels:
+            if ch.name not in seen:
+                seen[ch.name] = (ch, "stim")
+
+    # 1. Check config existence
+    for name, (ch, label) in seen.items():
+        if name not in available:
+            problems.append(
+                f"{label.capitalize()} channel config '{name}' not found on "
+                f"microscope. Available configs: {sorted(available.keys())}"
+            )
+
+    # 2. Check exposure against camera limits
+    try:
+        camera = mmc.getCameraDevice()
+        if camera and mmc.hasPropertyLimits(camera, "Exposure"):
+            lo = mmc.getPropertyLowerLimit(camera, "Exposure")
+            hi = mmc.getPropertyUpperLimit(camera, "Exposure")
+            checked_exposures: set[tuple[str, int]] = set()
+            for event in events:
+                for ch in (*event.channels, *event.stim_channels):
+                    if ch.exposure is None:
+                        continue
+                    key = (ch.name, ch.exposure)
+                    if key in checked_exposures:
+                        continue
+                    checked_exposures.add(key)
+                    if ch.exposure < lo:
+                        problems.append(
+                            f"Channel '{ch.name}' exposure {ch.exposure} ms "
+                            f"is below camera minimum ({lo} ms)"
+                        )
+                    if hi > 0 and ch.exposure > hi:
+                        problems.append(
+                            f"Channel '{ch.name}' exposure {ch.exposure} ms "
+                            f"exceeds camera maximum ({hi} ms)"
+                        )
+    except Exception:
+        pass  # camera not set or property unavailable
+
+    # 3. Check device property limits (e.g. laser power)
+    checked_props: set[tuple] = set()
+    for event in events:
+        for ch in (*event.channels, *event.stim_channels):
+            if not (ch.device_name and ch.property_name and ch.power is not None):
+                continue
+            key = (ch.device_name, ch.property_name, ch.power)
+            if key in checked_props:
+                continue
+            checked_props.add(key)
+            try:
+                if not mmc.hasPropertyLimits(ch.device_name, ch.property_name):
+                    continue
+                lo = mmc.getPropertyLowerLimit(ch.device_name, ch.property_name)
+                hi = mmc.getPropertyUpperLimit(ch.device_name, ch.property_name)
+                if ch.power < lo:
+                    problems.append(
+                        f"Channel '{ch.name}': {ch.property_name}={ch.power} "
+                        f"is below device minimum ({lo})"
+                    )
+                if hi > 0 and ch.power > hi:
+                    problems.append(
+                        f"Channel '{ch.name}': {ch.property_name}={ch.power} "
+                        f"exceeds device maximum ({hi})"
+                    )
+            except Exception:
+                pass  # device/property not found
+
+    if problems:
+        for msg in problems:
+            warnings.warn(msg, UserWarning)
+    return len(problems) == 0
+
+
 def create_folders(path, folders):
     """Create all folders if they don't already exist.
 
@@ -521,114 +622,6 @@ def generate_exp_data_from_tracks(path):
 # ---------------------------------------------------------------------------
 # RTMEvent-based helpers
 # ---------------------------------------------------------------------------
-
-def make_acquisition(
-    n_frames: int,
-    channels: list,
-    positions: list[tuple[float, float, float]],
-    time_interval: float,
-    stim_channels: list | None = None,
-    stim_frames: range | set | None = None,
-    metadata: dict | None = None,
-) -> list:
-    """Generate RTMEvent list for a standard experiment.
-
-    Args:
-        n_frames: Number of timepoints.
-        channels: List of Channel dataclass instances.
-        positions: List of (x, y, z) tuples for FOV positions.
-        time_interval: Time between frames (seconds).
-        stim_channels: Optional list of Channel instances for stimulation.
-        stim_frames: Timepoints where stimulation is active (range or set).
-        metadata: Extra metadata dict broadcast to every event.
-
-    Returns:
-        List of RTMEvent objects.
-    """
-    from rtm_pymmcore.core.data_structures import RTMEvent, Channel
-
-    events = []
-    stim_frames = stim_frames or set()
-    extra_meta = metadata or {}
-    ch_tuple = tuple(channels)
-
-    for t in range(n_frames):
-        for p, (x, y, z) in enumerate(positions):
-            stim = tuple(stim_channels) if stim_channels and t in stim_frames else ()
-            events.append(RTMEvent(
-                index={"t": t, "p": p},
-                channels=ch_tuple,
-                stim_channels=stim,
-                min_start_time=t * time_interval,
-                x_pos=x,
-                y_pos=y,
-                z_pos=z,
-                metadata=extra_meta,
-            ))
-
-    return events
-
-
-def from_mda_sequence(
-    sequence,
-    stim_channels: list | None = None,
-    stim_frames: range | set | None = None,
-    metadata: dict | None = None,
-) -> list:
-    """Convert an MDASequence to RTMEvents.
-
-    Groups events by (t, p) and collects channels per group.
-
-    Args:
-        sequence: useq.MDASequence instance.
-        stim_channels: Optional list of Channel for stimulation.
-        stim_frames: Timepoints where stimulation is active.
-        metadata: Extra metadata dict.
-
-    Returns:
-        List of RTMEvent objects.
-    """
-    from rtm_pymmcore.core.data_structures import RTMEvent, Channel
-
-    stim_frames = stim_frames or set()
-    extra_meta = metadata or {}
-
-    # Group MDASequence events by (t, p)
-    groups: dict[tuple, dict] = {}
-    for mda_ev in sequence:
-        t = mda_ev.index.get("t", 0)
-        p = mda_ev.index.get("p", 0)
-        key = (t, p)
-        if key not in groups:
-            groups[key] = {
-                "channels": [],
-                "x_pos": mda_ev.x_pos,
-                "y_pos": mda_ev.y_pos,
-                "z_pos": mda_ev.z_pos,
-                "min_start_time": mda_ev.min_start_time,
-            }
-        if mda_ev.channel:
-            ch_name = mda_ev.channel.config if hasattr(mda_ev.channel, "config") else str(mda_ev.channel)
-            groups[key]["channels"].append(
-                Channel(name=ch_name, exposure=mda_ev.exposure or 0)
-            )
-
-    events = []
-    for (t, p), grp in sorted(groups.items()):
-        stim = tuple(stim_channels) if stim_channels and t in stim_frames else ()
-        events.append(RTMEvent(
-            index={"t": t, "p": p},
-            channels=tuple(grp["channels"]),
-            stim_channels=stim,
-            x_pos=grp["x_pos"],
-            y_pos=grp["y_pos"],
-            z_pos=grp["z_pos"],
-            min_start_time=grp["min_start_time"],
-            metadata=extra_meta,
-        ))
-
-    return events
-
 
 def events_to_dataframe(events: list) -> pd.DataFrame:
     """Convert RTMEvent list to summary DataFrame.
