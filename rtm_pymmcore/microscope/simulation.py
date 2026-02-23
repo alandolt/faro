@@ -28,22 +28,6 @@ class UniMMCoreSimulation(PyMMCoreMicroscope):
         super().__init__()
         self._experiment_thread: threading.Thread | None = None
         self.mmc = mmc
-        self._patch_getROI()
-
-    def _patch_getROI(self):
-        """Work around pymmcore-plus bug: UniMMCore.getROI() has inverted
-        condition for Python cameras, causing RuntimeError on super().getROI().
-        Fall back to image dimensions when the native call fails."""
-        original = self.mmc.getROI
-        mmc = self.mmc
-
-        def _safe_getROI(*args):
-            try:
-                return original(*args)
-            except (RuntimeError, NotImplementedError):
-                return [0, 0, mmc.getImageWidth(), mmc.getImageHeight()]
-
-        self.mmc.getROI = _safe_getROI
 
     def run_experiment(self, events=None, *, df_acquire=None, stim_mode="current"):
         """Run the experiment in a background thread.

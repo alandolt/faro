@@ -14,7 +14,7 @@ dependencies = [
     "napari[all]",
     "scikit-image",
     "tifffile",
-    "pymmcore-plus",
+    "pymmcore-plus>=0.17.3",
     "pymmcore-widgets",
     "trackpy",
     "napari-micromanager",
