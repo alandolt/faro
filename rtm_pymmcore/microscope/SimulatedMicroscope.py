@@ -3,6 +3,7 @@ import threading
 import time as _time
 
 import numpy as np
+import pandas as pd
 import pymmcore_plus
 from pymmcore_plus.mda._engine import MDAEngine
 from useq import MDAEvent
@@ -44,9 +45,11 @@ class _SimulatedCMMCorePlus(pymmcore_plus.CMMCorePlus):
         self._sim_lock = threading.Lock()
         self._sim_thread = None
         self._sim_running = False
+        self._time_scale = 0.3  # default physics time scaling
 
-    def _set_simulator(self, simulator):
+    def _set_simulator(self, simulator, time_scale: float = 0.3):
         self._simulator = simulator
+        self._time_scale = time_scale
         self._start_simulation_thread()
 
     # -- background physics -------------------------------------------------
@@ -65,7 +68,7 @@ class _SimulatedCMMCorePlus(pymmcore_plus.CMMCorePlus):
         last = _time.perf_counter()
         while self._sim_running:
             now = _time.perf_counter()
-            dt = (now - last) * 0.3  # scale for smoother physics
+            dt = (now - last) * self._time_scale
             last = now
             with self._sim_lock:
                 self._simulator.update(dt=dt)
@@ -447,6 +450,7 @@ class SimulatedMicroscope(AbstractMicroscope):
         drug_type: str = "growth",
         channel_rendering_modes: dict = None,
         brownian_d: float = 5.0,
+        time_scale: float = 0.3,
     ):
         super().__init__()
 
@@ -476,7 +480,7 @@ class SimulatedMicroscope(AbstractMicroscope):
             drug_type=drug_type,
             brownian_d=brownian_d,
         )
-        self.mmc._set_simulator(self.simulator)
+        self.mmc._set_simulator(self.simulator, time_scale=time_scale)
 
         self.channel_rendering_modes = channel_rendering_modes or {0: 1, 1: 2}
 
@@ -550,5 +554,21 @@ class SimulatedMicroscope(AbstractMicroscope):
         self.controller.run(df_acquire=df_acquire)
 
     def post_experiment(self):
-        """No-op – nothing to clean up for the simulation."""
-        pass
+        """Concatenate per-FOV tracks into a single DataFrame and return it.
+
+        Returns
+        -------
+        pd.DataFrame or None
+            The concatenated experiment data, or *None* when no pipeline /
+            storage path is available.
+        """
+        if self.pipeline is None or not hasattr(self.pipeline, "storage_path"):
+            return None
+        try:
+            from rtm_pymmcore.utils import generate_exp_data_from_tracks
+
+            generate_exp_data_from_tracks(self.pipeline.storage_path)
+            path = os.path.join(self.pipeline.storage_path, "exp_data.parquet")
+            return pd.read_parquet(path)
+        except Exception:
+            return None

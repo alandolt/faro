@@ -4,6 +4,7 @@ import numpy as np
 import time
 from typing import Optional, List, Union, Literal
 from .cell_optogenetic import OptogeneticCell
+from .cell_protrusion import ProtrusionCell
 from .cell_drug import DrugResponseCell
 from .renderer import Renderer
 from .spatial_grid import SpatialGrid
@@ -98,6 +99,14 @@ class MicroscopeSimOptmized:
                         vertices=24,
                         seed=seed,
                     )
+                elif self.cell_type == "protrusion":
+                    cell = ProtrusionCell(
+                        self.width,
+                        self.height,
+                        self.base_radius,
+                        vertices=24,
+                        seed=seed,
+                    )
                 elif self.cell_type == "mixed":
                     cell_choice = self._rng.choice(
                         ["normal", "optogenetic"], p=[0.7, 0.3]
@@ -137,6 +146,14 @@ class MicroscopeSimOptmized:
                         )
                     elif cell_type == "optogenetic":
                         cell = OptogeneticCell(
+                            self.width,
+                            self.height,
+                            self.base_radius,
+                            vertices=24,
+                            seed=seed,
+                        )
+                    elif cell_type == "protrusion":
+                        cell = ProtrusionCell(
                             self.width,
                             self.height,
                             self.base_radius,
@@ -230,7 +247,7 @@ class MicroscopeSimOptmized:
 
     def apply_optogenetic_stimulator(self, mask: np.ndarray) -> None:
         """Apply optogenetic stimulation to cells."""
-        if self.cell_type != "optogenetic":
+        if self.cell_type not in ("optogenetic", "protrusion"):
             return
 
         for cell in self._cells:
@@ -240,6 +257,8 @@ class MicroscopeSimOptmized:
         for i, cell in enumerate(self._cells):
             self.radii[i] = cell.r
             self.velocities[i] = cell.vel
+            self.base_radii[i] = cell.base_r
+            self.areas[i] = cell.area0
 
     def apply_drug(self, concentration: float, drug_type: str = "growth") -> None:
         """Apply drug to all cells."""
