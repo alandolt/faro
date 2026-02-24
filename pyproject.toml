@@ -38,8 +38,13 @@ cellpose = [
     ]
 
 convpaint = [
-    "napari-convpaint", 
+    "napari-convpaint",
     "scipy"
+]
+
+sim = [
+    "numba",
+    "opencv-python",
 ]
 
 

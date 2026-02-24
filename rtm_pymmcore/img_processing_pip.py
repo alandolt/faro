@@ -185,7 +185,7 @@ class ImageProcessingPipeline:
             stim_mask, _ = self.stimulator.get_stim_mask(
                 label_images=segmentation_results, metadata=metadata, img=img
             )
-            if self.stimulator.use_labels and not self.stimulator.use_imgs:
+            if self.stimulator.use_labels:
                 fov_obj.stim_mask_queue.put_nowait(stim_mask)
 
         if metadata["img_type"] == ImgType.IMG_OPTOCHECK:

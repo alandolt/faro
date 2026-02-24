@@ -41,7 +41,11 @@ class StimWholeFOV(Stim):
     def get_stim_mask(
         self, label_images: dict, metadata: dict = None, img: np.array = None
     ) -> npt.NDArray[np.uint8]:
-        return np.ones((img.shape[-2], img.shape[-1]), dtype=np.uint8), None
+        if img is not None:
+            h, w = img.shape[-2], img.shape[-1]
+        else:
+            h, w = 512, 512  # default; DMD affine_transform will resize
+        return np.ones((h, w), dtype=np.uint8), None
 
 
 class StimNothing(Stim):
