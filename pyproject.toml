@@ -47,6 +47,11 @@ gpax = [
     "gpax"
     ]
 
+sim = [
+    "numba",
+    "opencv-python",
+]
+
 
 [tool.uv.sources]
 torch = [
