@@ -283,7 +283,7 @@ class MicroscopeSimOptmized:
         self._last_time = now
         self.update(dt)
 
-        if mask is not None and self.cell_type == "optogenetic":
+        if mask is not None and self.cell_type in ("optogenetic", "protrusion"):
             self.apply_optogenetic_stimulator(mask)
         elif mask is not None and self.cell_type == "drug":
             if np.any(mask):

@@ -118,8 +118,12 @@ class BOptGPAX(Agent):
         ucb_beta: float = 4.0,
         ei_xi: float = 0.0,
         ei_num_samples: int = 16,
-        ei_noiseless: bool = False,
+        ei_noiseless: bool = True,
+        n_cov_samples: int = 10,
+        penalty: Optional[str] = None,
+        penalty_factor: float = 1.0,
         prior=None,
+        verbose: bool = False,
     ):
 
         self.n_iterations = n_iterations
@@ -152,14 +156,25 @@ class BOptGPAX(Agent):
         self.ei_xi = float(ei_xi)
         self.ei_num_samples = int(ei_num_samples)
         self.ei_noiseless = bool(ei_noiseless)
+        self.n_cov_samples = int(n_cov_samples)
 
         # Penalty settings for discouraging re-evaluation at recent points
-        self.penalty = None  # Options: None, 'delta', 'inverse_distance'
-        self.penalty_factor = 1.0  # Strength of penalty for 'inverse_distance'
+        # Options: None, 'delta', 'inverse_distance'
+        if penalty is not None:
+            penalty = penalty.lower().strip()
+            if penalty not in {"delta", "inverse_distance"}:
+                raise ValueError(
+                    f"Unsupported penalty='{penalty}'. Use None, 'delta', or 'inverse_distance'."
+                )
+        self.penalty = penalty
+        self.penalty_factor = float(penalty_factor)
 
         # Tracks which acquisition was actually used in the most recent BO round
         # (can differ from self.acquisition_function if we fall back).
         self._acquisition_used_this_round = self.acquisition_function
+
+        self.verbose = verbose
+        self._iteration_means = []
 
     def _apply_penalty(
         self,
@@ -171,17 +186,20 @@ class BOptGPAX(Agent):
     ) -> jnp.ndarray:
         """Apply penalty to acquisition function based on recent points.
 
+        Both ``x_scaled`` and ``recent_points`` must be in the **same**
+        coordinate space (e.g. both normalised with the same scaler) so
+        that Euclidean distances are meaningful.
+
         Args:
             acq: Acquisition function values
-            x_scaled: Scaled input points where acquisition was computed
-            recent_points: Recently evaluated points (unscaled)
+            x_scaled: Input points where acquisition was computed (scaled)
+            recent_points: Recently evaluated points (scaled, same space)
             penalty: Type of penalty ('delta' or 'inverse_distance')
             penalty_factor: Strength of penalty for 'inverse_distance'
 
         Returns:
             Penalized acquisition values
         """
-        # Scale recent points using the same scaler
         recent_scaled = jnp.asarray(recent_points)
 
         if penalty == "delta":
@@ -422,9 +440,17 @@ class BOptGPAX(Agent):
     ):
         """Compute robust acquisition function by marginalizing over covariate samples.
 
-        Uses a Monte-Carlo estimate of Expected Improvement (EI) from posterior samples
-        returned by GPax (`predict_in_batches`). This avoids numerical issues where the
-        analytic EI implementation can return NaNs (e.g. near-zero predictive variance).
+        For **EI** a *covariate-conditional incumbent* is used: the
+        improvement threshold is the best GP-predicted mean over the
+        controllable-parameter grid *at each covariate sample separately*.
+        This prevents a single favourable-covariate observation from
+        suppressing EI at less favourable covariate values.
+
+        For **UCB** no incumbent is needed, so the standard formula is
+        applied per (x, c) pair and then averaged.
+
+        Penalty (if enabled) is applied **after** marginalisation, using
+        only the controllable-parameter dimensions (properly scaled).
 
         Args:
             rng_key: JAX random key
@@ -432,7 +458,7 @@ class BOptGPAX(Agent):
             x_grid: Grid of controllable parameters (N_grid, n_params) - unscaled
             c_samples: Samples from covariate distribution (N_mc, n_covariates) - unscaled
             x_scaler: StandardScalerBounds instance for input scaling
-            y_scaled: Scaled training outputs for best_f computation
+            y_scaled: Scaled training outputs (unused when EI uses model-based incumbent)
             batch_size: Number of points to evaluate at once
 
         Returns:
@@ -445,74 +471,116 @@ class BOptGPAX(Agent):
         if c_samples.ndim == 1:
             c_samples = c_samples.reshape(-1, 1)
 
-        # Total evaluations = N_grid * N_mc
-        # 1. Repeat x_grid for each MC sample
-        x_repeated = jnp.repeat(x_grid, n_mc, axis=0)
-
-        # 2. Tile c_samples for the whole grid
-        c_tiled = jnp.tile(c_samples, (n_grid, 1))
-
-        # 3. Stack to create full input (unscaled)
-        x_full_batch = jnp.hstack([x_repeated, c_tiled])
-
-        # 4. Scale the full batch
+        # Build full (x, c) evaluation batch ----------------------------------
+        x_repeated = jnp.repeat(x_grid, n_mc, axis=0)  # (N_grid*N_mc, n_params)
+        c_tiled = jnp.tile(c_samples, (n_grid, 1))  # (N_grid*N_mc, n_covs)
+        x_full_batch = jnp.hstack(
+            [x_repeated, c_tiled]
+        )  # (N_grid*N_mc, n_params+n_covs)
         x_full_batch_scaled = x_scaler.transform(x_full_batch)
 
-        # 4. Compute Acquisition: Monte-Carlo EI/UCB from posterior samples
         n_total = x_full_batch_scaled.shape[0]
+        # Clamp batch_size so gpax split_in_batches doesn't fail on small inputs
+        batch_size = min(batch_size, n_total)
         print(
-            f"Computing robust acquisition over {n_total} scenarios ({n_grid} grid points x {n_mc} covariate samples)..."
+            f"Computing robust acquisition over {n_total} scenarios "
+            f"({n_grid} grid points x {n_mc} covariate samples)..."
         )
 
         maximize = self.objective_metric.goal == "maximize"
-        best_f_scaled = jnp.max(y_scaled) if maximize else jnp.min(y_scaled)
-        print(f"  best_f (scaled): {float(best_f_scaled):.6f}")
 
-        # Get recent points for penalty (only controllable parameters, not covariates)
-        recent_ctrl = None
-        if self.penalty is not None and self.x_performed_experiments is not None:
-            n_ctrl_params = len(self.parameters_to_optimize)
-            recent_ctrl = self.x_performed_experiments[:, :n_ctrl_params]
-
-        if self.acquisition_function == "ei":
-            all_acq_values = self._compute_mc_ei(
-                rng_key,
-                gp_model,
-                x_full_batch_scaled,
-                best_f_scaled=best_f_scaled,
-                maximize=maximize,
-                batch_size=batch_size,
-                xi=self.ei_xi,
-                penalty=self.penalty,
-                recent_points=recent_ctrl,
-                penalty_factor=self.penalty_factor,
-            )
-        else:
-            all_acq_values = self._compute_mc_ucb(
-                rng_key,
-                gp_model,
-                x_full_batch_scaled,
-                maximize=maximize,
-                beta=self.ucb_beta,
-                batch_size=batch_size,
-                penalty=self.penalty,
-                recent_points=recent_ctrl,
-                penalty_factor=self.penalty_factor,
-            )
-
-        print(
-            f"  Acq values stats: min={float(jnp.min(all_acq_values)):.6f}, max={float(jnp.max(all_acq_values)):.6f}, mean={float(jnp.mean(all_acq_values)):.6f}"
+        # GP predictions for the full batch ------------------------------------
+        mean_pred, y_sampled = gp_model.predict_in_batches(
+            rng_key,
+            x_full_batch_scaled,
+            batch_size=batch_size,
+            n=self.ei_num_samples,
+            noiseless=self.ei_noiseless,
         )
 
-        # 5. Reshape and Average
-        # Reshape to (N_grid, N_mc) so we can average across the MC dimension
-        all_acq_matrix = all_acq_values.reshape(n_grid, n_mc)
+        mean_broadcast = mean_pred[None, None, :]
+        y_sampled = jnp.where(jnp.isfinite(y_sampled), y_sampled, mean_broadcast)
 
-        # Take the mean across axis 1 (integrating out covariates)
-        robust_acq = jnp.mean(all_acq_matrix, axis=1)
+        mean_flat = jnp.mean(y_sampled, axis=(0, 1))  # (N_grid*N_mc,)
+        var_flat = jnp.var(y_sampled, axis=(0, 1))  # (N_grid*N_mc,)
+
+        # Reshape to (N_grid, N_mc) for per-covariate operations
+        mean_matrix = mean_flat.reshape(n_grid, n_mc)
+        var_matrix = var_flat.reshape(n_grid, n_mc)
+
+        # Compute acquisition per (grid point, covariate sample) ---------------
+        if self.acquisition_function == "ei":
+            # Covariate-conditional incumbent: for each covariate sample the
+            # best predicted mean over the grid serves as the improvement
+            # threshold.  This is fairer than a single global best_f because
+            # a high-covariate observation does not inflate the bar for
+            # low-covariate scenarios.
+            if maximize:
+                best_f_per_cov = jnp.max(mean_matrix, axis=0)  # (N_mc,)
+            else:
+                best_f_per_cov = jnp.min(mean_matrix, axis=0)
+
+            print(
+                f"  best_f per covariate (scaled): "
+                f"min={float(jnp.min(best_f_per_cov)):.6f}, "
+                f"max={float(jnp.max(best_f_per_cov)):.6f}"
+            )
+
+            sigma_matrix = jnp.sqrt(jnp.maximum(var_matrix, 1e-12))
+
+            # u shape: (N_grid, N_mc), best_f_per_cov broadcasts along grid dim
+            u = (mean_matrix - (best_f_per_cov[None, :] + self.ei_xi)) / sigma_matrix
+            if not maximize:
+                u = -u
+
+            acq_matrix = sigma_matrix * (jnorm.pdf(u) + u * jnorm.cdf(u))
+            acq_matrix = jnp.where(jnp.isfinite(acq_matrix), acq_matrix, 0.0)
+        else:
+            # UCB – no incumbent needed
+            delta = jnp.sqrt(self.ucb_beta * var_matrix)
+            if maximize:
+                acq_matrix = mean_matrix + delta
+            else:
+                acq_matrix = -(mean_matrix - delta)
+            acq_matrix = jnp.where(jnp.isfinite(acq_matrix), acq_matrix, 0.0)
+
+        # Marginalise: average over covariate samples --------------------------
+        robust_acq = jnp.mean(acq_matrix, axis=1)  # (N_grid,)
+
+        # Penalty (controllable params only, properly scaled) ------------------
+        if self.penalty is not None and self.x_performed_experiments is not None:
+            n_ctrl = len(self.parameters_to_optimize)
+            recent_ctrl_raw = self.x_performed_experiments[:, :n_ctrl]
+
+            # Scale controllable params using the first n_ctrl dims of the scaler
+            ctrl_log = (
+                x_scaler.log_scale[:n_ctrl] if x_scaler.log_scale is not None else None
+            )
+            ctrl_mean = x_scaler.mean_[:n_ctrl]
+            ctrl_std = x_scaler.std_[:n_ctrl]
+
+            def _scale_ctrl(X):
+                X = jnp.asarray(X)
+                if ctrl_log is not None:
+                    for i, use_log in enumerate(ctrl_log):
+                        if use_log:
+                            X = X.at[:, i].set(jnp.log(X[:, i]))
+                return (X - ctrl_mean) / ctrl_std
+
+            x_grid_ctrl_scaled = _scale_ctrl(x_grid)
+            recent_ctrl_scaled = _scale_ctrl(jnp.asarray(recent_ctrl_raw))
+
+            robust_acq = self._apply_penalty(
+                robust_acq,
+                x_grid_ctrl_scaled,
+                np.asarray(recent_ctrl_scaled),
+                self.penalty,
+                self.penalty_factor,
+            )
 
         print(
-            f"  Robust acq stats: min={float(jnp.min(robust_acq)):.6f}, max={float(jnp.max(robust_acq)):.6f}"
+            f"  Robust acq stats: min={float(jnp.min(robust_acq)):.6f}, "
+            f"max={float(jnp.max(robust_acq)):.6f}"
         )
 
         return robust_acq
@@ -571,6 +639,12 @@ class BOptGPAX(Agent):
             rng_key, X=x, y=y, progress_bar=True, num_warmup=200, num_samples=1000
         )
 
+        # Store model and scalers for post-hoc analysis / 3D visualization
+        self.model = gp_model
+        self._x_scaler = x_scaler
+        self._y_scaler = y_scaler
+        self._rng_key_predict = rng_key_predict
+
         # Only consider points not yet measured
         x_grid_ctrl = self.x_unmeasured.copy()
 
@@ -585,7 +659,7 @@ class BOptGPAX(Agent):
                     cov_samples = np.array([0.0])
                 else:
                     # Sample from observed covariate distribution (with replacement)
-                    n_cov_samples = 20
+                    n_cov_samples = self.n_cov_samples
                     rng = np.random.default_rng(self._seed)
                     cov_samples = rng.choice(cov_vals, size=n_cov_samples, replace=True)
                 cov_samples_list.append(cov_samples)
@@ -624,11 +698,14 @@ class BOptGPAX(Agent):
             x_total_scaled = x_scaler.transform(x_grid_ctrl)
             maximize = self.objective_metric.goal == "maximize"
 
-            # Get recent points for penalty
+            # Get recent points for penalty (scaled to match x_total_scaled)
             recent_ctrl = None
             if self.penalty is not None and self.x_performed_experiments is not None:
                 n_ctrl_params = len(self.parameters_to_optimize)
-                recent_ctrl = self.x_performed_experiments[:, :n_ctrl_params]
+                recent_ctrl_raw = self.x_performed_experiments[:, :n_ctrl_params]
+                recent_ctrl = np.asarray(
+                    x_scaler.transform(jnp.asarray(recent_ctrl_raw))
+                )
 
             if self.acquisition_function == "ei":
                 best_f_scaled = jnp.max(y) if maximize else jnp.min(y)
@@ -701,38 +778,58 @@ class BOptGPAX(Agent):
             # because _plot_mock_example reshapes into (len(unique_x1), len(unique_x2)).
             x_plot_ctrl = self.x_total_linespace.copy()
 
-            # Get recent points for penalty (for plotting)
-            recent_ctrl_plot = None
-            if self.penalty is not None and self.x_performed_experiments is not None:
-                n_ctrl_params = len(self.parameters_to_optimize)
-                recent_ctrl_plot = self.x_performed_experiments[:, :n_ctrl_params]
-
             if len(self.bo_covariates) > 0:
-                if acquisition_used == "ucb":
-                    old_acq = self.acquisition_function
-                    try:
-                        self.acquisition_function = "ucb"
-                        acq_values_plot = self._compute_robust_acq(
+                # Reuse acquisition values from the optimization call;
+                # only compute the (few) already-measured grid points.
+                diffs = np.abs(x_plot_ctrl[:, None, :] - x_grid_ctrl[None, :, :])
+                missing_mask = ~np.any(np.all(diffs < 1e-10, axis=2), axis=1)
+                x_missing = x_plot_ctrl[missing_mask]
+
+                if len(x_missing) > 0:
+                    if acquisition_used == "ucb":
+                        old_acq = self.acquisition_function
+                        try:
+                            self.acquisition_function = "ucb"
+                            acq_missing = self._compute_robust_acq(
+                                rng_key_predict,
+                                gp_model,
+                                x_missing,
+                                cov_grid,
+                                x_scaler,
+                                y,
+                            )
+                        finally:
+                            self.acquisition_function = old_acq
+                    else:
+                        acq_missing = self._compute_robust_acq(
                             rng_key_predict,
                             gp_model,
-                            x_plot_ctrl,
+                            x_missing,
                             cov_grid,
                             x_scaler,
                             y,
                         )
-                    finally:
-                        self.acquisition_function = old_acq
+                    acq_values_plot = np.empty(len(x_plot_ctrl))
+                    acq_values_plot[~missing_mask] = np.asarray(acq_values_total)
+                    acq_values_plot[missing_mask] = np.asarray(acq_missing)
+                    acq_values_plot = jnp.array(acq_values_plot)
                 else:
-                    acq_values_plot = self._compute_robust_acq(
-                        rng_key_predict,
-                        gp_model,
-                        x_plot_ctrl,
-                        cov_grid,
-                        x_scaler,
-                        y,
-                    )
+                    acq_values_plot = acq_values_total
                 x_plot_with_cov = x_plot_ctrl
             else:
+                # Compute recent points for penalty (only needed without covariates;
+                # with covariates the penalty is applied inside _compute_robust_acq)
+                recent_ctrl_plot = None
+                if (
+                    self.penalty is not None
+                    and self.x_performed_experiments is not None
+                ):
+                    n_ctrl_params = len(self.parameters_to_optimize)
+                    recent_ctrl_raw = self.x_performed_experiments[:, :n_ctrl_params]
+                    recent_ctrl_plot = np.asarray(
+                        x_scaler.transform(jnp.asarray(recent_ctrl_raw))
+                    )
+
                 x_plot_scaled = x_scaler.transform(x_plot_ctrl)
                 maximize = self.objective_metric.goal == "maximize"
                 if acquisition_used == "ei":
@@ -777,6 +874,15 @@ class BOptGPAX(Agent):
 
         return next_parameters_dict
 
+    def _get_ground_truth_grid(self, unique_x1, unique_x2, cov_mean):
+        """Compute ground truth on a (x1, x2) grid.
+
+        Returns an array of shape (len(unique_x1), len(unique_x2)) or None
+        if no analytical ground truth is available (in which case the plot
+        will show a convergence subplot instead).
+        """
+        return compute_ground_truth(unique_x1, unique_x2, cov_mean)
+
     def _plot_mock_example(
         self,
         df_results: pd.DataFrame,
@@ -793,9 +899,9 @@ class BOptGPAX(Agent):
 
         Creates 4 subplots:
         1. Measured points (x1, x2) with y as color, covariate as text annotations
-        2. GP predictions marginalized over covariate
+        2. Ground truth (if available) or GP model uncertainty
         3. Acquisition function marginalized over covariate
-        4. Ground truth
+        4. GP predicted landscape marginalized over covariate
         """
 
         # Extract controllable parameters grid
@@ -830,10 +936,14 @@ class BOptGPAX(Agent):
 
         # Scale and predict
         x_grid_scaled = x_scaler.transform(x_grid_full)
-        y_pred_scaled, _ = gp_model.predict(
+        y_pred_scaled, y_samples_scaled = gp_model.predict(
             rng_key_predict, x_grid_scaled, noiseless=True
         )
         y_pred = y_scaler.inverse_transform(y_pred_scaled).flatten()
+
+        # Compute prediction uncertainty (std) in original scale
+        y_std_scaled = jnp.std(y_samples_scaled, axis=(0, 1))
+        y_std = np.asarray(y_std_scaled) * float(jnp.abs(y_scaler.std_[0]))
 
         # Marginalize predictions and acquisition over covariate
         if len(self.bo_covariates) > 0:
@@ -842,10 +952,14 @@ class BOptGPAX(Agent):
             y_pred_reshaped = y_pred.reshape(n_ctrl_points, n_cov_samples)
             y_pred_marg = y_pred_reshaped.mean(axis=1)
 
+            y_std_reshaped = y_std.reshape(n_ctrl_points, n_cov_samples)
+            y_std_marg = y_std_reshaped.mean(axis=1)
+
             # acq_values_total is already marginalized from _determine_next_parameters
             acq_marg = np.asarray(acq_values_total)
         else:
             y_pred_marg = y_pred
+            y_std_marg = y_std
             acq_marg = np.asarray(acq_values_total)
 
         # Reshape for 2D plotting - meshgrid uses 'ij' indexing, so we need (n_x1, n_x2)
@@ -855,20 +969,27 @@ class BOptGPAX(Agent):
         # Create meshgrid for proper pcolormesh plotting
         X_mesh, Y_mesh = np.meshgrid(unique_x1, unique_x2, indexing="ij")
 
-        # Compute ground truth
-        y_true = compute_ground_truth(unique_x1, unique_x2, cov_mean)
+        # Compute ground truth (None if not available)
+        y_true = self._get_ground_truth_grid(unique_x1, unique_x2, cov_mean)
 
         # Determine common y-axis limits across all plots
         all_y_values = []
         if not df_results.empty:
             all_y_values.append(df_results[self.objective_metric.name].values)
-        all_y_values.extend([y_pred_marg, y_true.flatten()])
+        all_y_values.append(y_pred_marg)
+        if y_true is not None:
+            all_y_values.append(y_true.flatten())
         all_y_values = np.concatenate(all_y_values)
         y_vmin = float(np.nanmin(all_y_values))
         y_vmax = float(np.nanmax(all_y_values))
 
         # Create figure with 4 subplots
         fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+        fig.suptitle(
+            f"BO Iteration {self.iteration + 1}/{self.n_iterations} "
+            f"({len(df_results)} total measurements)",
+            fontsize=14,
+        )
 
         # Subplot 1: Measured points with covariate as text
         ax1 = axes[0, 0]
@@ -897,15 +1018,16 @@ class BOptGPAX(Agent):
                 )
                 for (x1, x2), group in grouped:
                     cov_val = group[self.bo_covariates[0].name].mean()
-                    ax1.text(
-                        x1,
-                        x2 + 0.15,
+                    ax1.annotate(
                         f"{cov_val:.2f}",
+                        xy=(x1, x2),
+                        xytext=(0, 8),
+                        textcoords="offset points",
                         ha="center",
                         va="bottom",
                         fontsize=8,
                         bbox=dict(
-                            boxstyle="round,pad=0.3", facecolor="white", alpha=0.7
+                            boxstyle="round,pad=0.2", facecolor="white", alpha=0.7
                         ),
                     )
 
@@ -914,36 +1036,80 @@ class BOptGPAX(Agent):
         ax1.set_title("Measured Points\n(covariate values shown as text)")
         ax1.grid(True, alpha=0.3)
 
-        # Subplot 2: GP Predictions (marginalized)
-        ax2 = axes[0, 1]
-        im2 = ax2.pcolormesh(
-            X_mesh,
-            Y_mesh,
-            y_pred_2d,
-            cmap="viridis",
-            vmin=y_vmin,
-            vmax=y_vmax,
-            shading="nearest",
-        )
-        # Overlay measured points
-        if not df_results.empty:
-            ax2.scatter(
-                df_results[self.parameters_to_optimize[0].name],
-                df_results[self.parameters_to_optimize[1].name],
-                c="red",
-                s=50,
-                marker="x",
-                linewidths=2,
-                label="Measured",
-                zorder=3,
-            )
-            ax2.legend()
-        ax2.set_xlabel(self.parameters_to_optimize[0].name)
-        ax2.set_ylabel(self.parameters_to_optimize[1].name)
         cov_label = (
             " (marginalized over covariate)" if len(self.bo_covariates) > 0 else ""
         )
-        ax2.set_title(f"GP Predictions{cov_label}")
+
+        # Subplot 2: Ground Truth (if available) or GP Model Uncertainty
+        ax2 = axes[0, 1]
+        if y_true is not None:
+            im2 = ax2.pcolormesh(
+                X_mesh,
+                Y_mesh,
+                y_true,
+                cmap="viridis",
+                vmin=y_vmin,
+                vmax=y_vmax,
+                shading="nearest",
+            )
+            opt_idx = np.unravel_index(
+                (
+                    y_true.argmax()
+                    if self.objective_metric.goal == "maximize"
+                    else y_true.argmin()
+                ),
+                y_true.shape,
+            )
+            ax2.scatter(
+                unique_x1[opt_idx[0]],
+                unique_x2[opt_idx[1]],
+                c="red",
+                s=300,
+                marker="*",
+                edgecolors="black",
+                linewidths=2,
+                label="True optimum",
+                zorder=3,
+            )
+            if not df_results.empty:
+                ax2.scatter(
+                    df_results[self.parameters_to_optimize[0].name],
+                    df_results[self.parameters_to_optimize[1].name],
+                    c="white",
+                    s=50,
+                    marker="x",
+                    linewidths=2,
+                    label="Measured",
+                    zorder=3,
+                    alpha=0.8,
+                )
+            ax2.legend()
+            ax2.set_title(f"Ground Truth (cov={cov_mean:.2f})")
+        else:
+            y_std_2d = y_std_marg.reshape(len(unique_x1), len(unique_x2))
+            im2 = ax2.pcolormesh(
+                X_mesh,
+                Y_mesh,
+                y_std_2d,
+                cmap="YlOrRd",
+                shading="nearest",
+            )
+            fig.colorbar(im2, ax=ax2, label=f"std({self.objective_metric.name})")
+            if not df_results.empty:
+                ax2.scatter(
+                    df_results[self.parameters_to_optimize[0].name],
+                    df_results[self.parameters_to_optimize[1].name],
+                    c="blue",
+                    s=50,
+                    marker="x",
+                    linewidths=2,
+                    label="Measured",
+                    zorder=3,
+                )
+                ax2.legend()
+            ax2.set_title(f"GP Model Uncertainty{cov_label}")
+        ax2.set_xlabel(self.parameters_to_optimize[0].name)
+        ax2.set_ylabel(self.parameters_to_optimize[1].name)
         ax2.grid(True, alpha=0.3)
 
         # Subplot 3: Acquisition Function (marginalized)
@@ -1030,50 +1196,63 @@ class BOptGPAX(Agent):
         ax3.set_title(f"Acquisition Function ({str(acq_label).upper()}){cov_label}")
         ax3.grid(True, alpha=0.3)
 
-        # Subplot 4: Ground Truth
+        # Subplot 4: GP Predicted Landscape (always)
         ax4 = axes[1, 1]
         im4 = ax4.pcolormesh(
             X_mesh,
             Y_mesh,
-            y_true,
+            y_pred_2d,
             cmap="viridis",
             vmin=y_vmin,
             vmax=y_vmax,
             shading="nearest",
         )
-        # Mark true optimum
-        opt_idx = np.unravel_index(
+        # Mark GP-predicted optimum
+        gp_opt_idx = np.unravel_index(
             (
-                y_true.argmax()
+                y_pred_2d.argmax()
                 if self.objective_metric.goal == "maximize"
-                else y_true.argmin()
+                else y_pred_2d.argmin()
             ),
-            y_true.shape,
+            y_pred_2d.shape,
         )
         ax4.scatter(
-            unique_x1[opt_idx[0]],
-            unique_x2[opt_idx[1]],
+            unique_x1[gp_opt_idx[0]],
+            unique_x2[gp_opt_idx[1]],
             c="red",
             s=300,
             marker="*",
             edgecolors="black",
             linewidths=2,
-            label="True optimum",
+            label="GP-predicted optimum",
             zorder=3,
         )
+        # Overlay measured points
+        if not df_results.empty:
+            ax4.scatter(
+                df_results[self.parameters_to_optimize[0].name],
+                df_results[self.parameters_to_optimize[1].name],
+                c="white",
+                s=50,
+                marker="x",
+                linewidths=2,
+                label="Measured",
+                zorder=3,
+                alpha=0.8,
+            )
         ax4.legend()
         ax4.set_xlabel(self.parameters_to_optimize[0].name)
         ax4.set_ylabel(self.parameters_to_optimize[1].name)
-        ax4.set_title(f"Ground Truth (cov={cov_mean:.2f})")
+        ax4.set_title(f"GP Predicted Landscape{cov_label}")
         ax4.grid(True, alpha=0.3)
 
         # Add some spacing between subplots before adding colorbar
         plt.subplots_adjust(right=0.92)
 
-        # Shared colorbar for subplots 1, 2, 4 (y values)
+        # Shared colorbar for subplots using viridis y-value scale (1, 2/gt, 4)
         cbar_ax = fig.add_axes([0.94, 0.15, 0.02, 0.7])
         fig.colorbar(
-            scatter if not df_results.empty else im2,
+            scatter if not df_results.empty else im4,
             cax=cbar_ax,
             label=self.objective_metric.name,
         )
@@ -1108,15 +1287,31 @@ class BOptGPAX(Agent):
             df_acquisition = self._create_df_acquire_for_exp_cycle(params)
             df_new_results = self._run_experiment_and_preprocess_results(df_acquisition)
             df_results = pd.concat([df_results, df_new_results], ignore_index=True)
+            if not df_new_results.empty:
+                self._iteration_means.append(
+                    float(df_new_results[self.objective_metric.name].mean())
+                )
 
         for e in range(self.n_iterations):
             print(f"\n=== BO Iteration {e + 1}/{self.n_iterations} ===")
-            next_params = self._determine_next_parameters(df_results)
+            next_params = self._determine_next_parameters(
+                df_results, verbose=self.verbose
+            )
             print(f"Selected parameters for next experiment: {next_params}")
             new_df_acquire = self._create_df_acquire_for_exp_cycle(next_params)
             new_df_results = self._run_experiment_and_preprocess_results(new_df_acquire)
             df_results = pd.concat([df_results, new_df_results], ignore_index=True)
+            if not new_df_results.empty:
+                self._iteration_means.append(
+                    float(new_df_results[self.objective_metric.name].mean())
+                )
             self.iteration += 1
+
+        # Store final results for external access
+        if not df_results.empty:
+            self.x = self._extract_x_from_df(df_results)
+            self.y = self._extract_y_from_df(df_results)
+        self.df_results = df_results
 
 
 # Module-level RNG so repeated calls to mock_df_results don't reset covariate samples.
@@ -1191,5 +1386,65 @@ def compute_ground_truth(x1_grid, x2_grid, cov1_mean):
     interaction = 6.0 * np.sin(0.5 * x1_mesh) * np.cos(0.7 * x2_mesh)
 
     y_true = base + quad + interaction + 10.0 * cov1_mean
+
+    return y_true
+
+
+def compute_protrusion_ground_truth(
+    angle_grid,
+    radial_grid,
+    opto_rtk_mean,
+    *,
+    n_stim_frames=10,
+    cell_radius=20.0,
+    patch_radius=10,
+    n_vertices=24,
+    protrusion_gain=0.03,
+):
+    """Physics-based ground truth for the protrusion simulation.
+
+    Models the geometric intersection of a circular stimulation patch
+    (radius ``patch_radius``) with the boundary vertices of a roughly
+    circular cell (radius ``cell_radius``, ``n_vertices`` vertices).
+
+    The patch centre is placed at distance ``stim_radial * cell_radius``
+    from the cell centre.  A boundary vertex at angular offset *phi*
+    from the patch direction is hit when::
+
+        R^2 + d^2 - 2 R d cos(phi) < patch_radius^2
+
+    Because the cell is approximately circular, ``stim_angle`` has
+    negligible effect -- the ground-truth surface is essentially
+    one-dimensional (depends only on ``stim_radial``).
+
+    Returns array with shape ``(len(angle_grid), len(radial_grid))``
+    using ``'ij'`` indexing.
+    """
+    _sa, sr = np.meshgrid(angle_grid, radial_grid, indexing="ij")
+
+    R = cell_radius
+    p = patch_radius
+    d = sr * R  # distance from cell centre to patch centre
+
+    # -- Fraction of boundary arc covered by the stimulation patch ------
+    # u = cos(half-angle) threshold; arc is hit where cos(phi) > u.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        u = np.where(d > 1e-6, (R**2 + d**2 - p**2) / (2 * R * d), np.inf)
+
+    arc_frac = np.where(
+        u >= 1.0,
+        0.0,
+        np.where(u <= -1.0, 1.0, np.arccos(np.clip(u, -1, 1)) / np.pi),
+    )
+
+    # -- Per-frame fractional area change --------------------------------
+    # effective_gain = protrusion_gain * position_factor * opto_rtk
+    # position_factor ~ 1.0 (hit vertices sit on the boundary at distance R)
+    # Each hit vertex adds gain*R to its radius; the corresponding area
+    # wedge grows by ~2*(arc_frac)*gain*opto_rtk relative to total area.
+    per_frame = 2.0 * arc_frac * protrusion_gain * opto_rtk_mean
+
+    # Compound over stimulation frames.
+    y_true = (1.0 + per_frame) ** n_stim_frames - 1.0
 
     return y_true

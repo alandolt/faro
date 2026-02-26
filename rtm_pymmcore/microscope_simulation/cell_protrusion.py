@@ -82,7 +82,7 @@ class ProtrusionCell(OptogeneticCell):
         distances = np.linalg.norm(hit_positions - self.center, axis=1)
         # Normalise: 0 at centre, ~1 at the cell edge
         position_factor = np.mean(distances) / self.base_r
-        position_factor = np.clip(position_factor, 0.3, 1.5)
+        position_factor = np.clip(position_factor, 0.05, 1.5)
 
         effective_gain = (
             self.protrusion_gain * position_factor * self.opto_rtk_expression

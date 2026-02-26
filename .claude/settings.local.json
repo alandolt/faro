@@ -3,7 +3,9 @@
     "allow": [
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:api.github.com)"
+      "WebFetch(domain:api.github.com)",
+      "Bash(tail -c 5 \"c:/Users/Alex/Programmieren/01_git/PhD/rtm-pymmcore/rtm_pymmcore/agents/bo_optimization_gpax.py\")",
+      "Bash(xxd)"
     ]
   }
 }
