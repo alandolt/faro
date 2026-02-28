@@ -76,5 +76,5 @@ class AbstractMicroscope:
             self.dmd.calibrate()
 
     def post_experiment(self):
-        """Post-process the experiment."""
-        raise NotImplementedError("This method should be implemented in a subclass.")
+        """Post-process the experiment. Optional override."""
+        pass
