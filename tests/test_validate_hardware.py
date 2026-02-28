@@ -389,12 +389,12 @@ class TestAbstractMicroscopeValidateHardware:
         events = _make_events(channels=[Channel("anything", 50)])
         assert mic.validate_hardware(events) is True
 
-    def test_base_validate_events_without_pipeline(self):
-        """With no pipeline set, validate_events still works (skips pipeline check)."""
+    def test_base_validate_hardware_without_pipeline(self):
+        """validate_hardware works standalone (no pipeline involved)."""
         from rtm_pymmcore.microscope.base import AbstractMicroscope
         mic = AbstractMicroscope()
         events = _make_events(channels=[Channel("anything", 50)])
-        assert mic.validate_events(events) is True
+        assert mic.validate_hardware(events) is True
 
 
 class TestPyMMCoreMicroscopeValidateHardware:
@@ -426,8 +426,8 @@ class TestPyMMCoreMicroscopeValidateHardware:
         assert result is False
         assert any("MISSING" in str(x.message) for x in w)
 
-    def test_validate_events_combines_pipeline_and_hardware(self):
-        """mic.validate_events runs both pipeline and hardware checks."""
+    def test_pipeline_and_hardware_validation_separate(self):
+        """pipeline.validate_pipeline + mic.validate_hardware work independently."""
         import tempfile, shutil
         from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
         from rtm_pymmcore.core.pipeline import ImageProcessingPipeline
@@ -449,17 +449,18 @@ class TestPyMMCoreMicroscopeValidateHardware:
             )
             mic = PyMMCoreMicroscope()
             mic.mmc = FakeMMCore()
-            mic.set_pipeline(pipeline)
 
-            # Valid events — should pass
+            # Valid events — both pass
             events = _make_events(channels=[Channel("phase-contrast", 50)])
-            assert mic.validate_events(events) is True
+            assert pipeline.validate_pipeline(events) is True
+            assert mic.validate_hardware(events) is True
 
-            # Bad channel — hardware check fails
+            # Bad channel — hardware check fails, pipeline still passes
             events_bad = _make_events(channels=[Channel("MISSING", 50)])
+            assert pipeline.validate_pipeline(events_bad) is True
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
-                result = mic.validate_events(events_bad)
+                result = mic.validate_hardware(events_bad)
             assert result is False
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
