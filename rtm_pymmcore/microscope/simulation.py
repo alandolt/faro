@@ -1,7 +1,4 @@
-import threading
-
 from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
-from rtm_pymmcore.core.controller import Controller, ControllerSimulated, Analyzer
 
 
 class SimDMD:
@@ -26,75 +23,16 @@ class UniMMCoreSimulation(PyMMCoreMicroscope):
         mmc, # pymmcore_plus CMMCorePlus instance
     ):
         super().__init__()
-        self._experiment_thread: threading.Thread | None = None
         self.mmc = mmc
 
-    def run_experiment(self, events=None, *, df_acquire=None, stim_mode="current"):
-        """Run the experiment in a background thread.
-
-        Args:
-            events: Iterable of RTMEvent (primary path).
-            df_acquire: Legacy DataFrame (backwards compat). If both are None
-                        and a positional arg is a DataFrame, treat it as df_acquire.
-            stim_mode: ``"current"`` or ``"previous"`` — see Controller.run().
-
-        Keeps the Qt event loop free so napari can display frames and
-        the proxy signal relay can dispatch frameReady / sequenceFinished.
-        """
-        import pandas as pd
-
-        # Backwards compat: positional DataFrame
-        if events is not None and isinstance(events, pd.DataFrame):
-            df_acquire = events
-            events = None
-
-        # Wait for any previous experiment to finish (keep Qt alive)
-        if self._experiment_thread is not None and self._experiment_thread.is_alive():
-            self.post_experiment()
-
-        self.analyzer = Analyzer(self.pipeline)
-
+    def init_scope(self):
         # Detect SLM device for optogenetic stimulation
-        dmd = None
         try:
             slm_name = self.mmc.getSLMDevice()
             if slm_name:
-                dmd = SimDMD(slm_name)
+                self.dmd = SimDMD(slm_name)
         except Exception:
             pass
 
-        self.controller = Controller(
-            self.analyzer, self.mmc, self.queue, dmd=dmd
-        )
-
-        run_kwargs = {"stim_mode": stim_mode}
-        if events is not None:
-            run_kwargs["events"] = events
-        elif df_acquire is not None:
-            run_kwargs["df_acquire"] = df_acquire
-
-        self._experiment_thread = threading.Thread(
-            target=self.controller.run,
-            kwargs=run_kwargs,
-            daemon=True,
-        )
-        self._experiment_thread.start()
-
     def post_experiment(self):
-        """Wait for the experiment to finish.
-
-        Unlike a plain thread.join(), this periodically processes Qt events
-        so the viewer stays responsive (signal dispatches, canvas repaints).
-        """
-        if self._experiment_thread is None:
-            return
-        try:
-            from qtpy.QtWidgets import QApplication
-            app = QApplication.instance()
-        except ImportError:
-            app = None
-
-        while self._experiment_thread.is_alive():
-            if app is not None:
-                app.processEvents()
-            self._experiment_thread.join(timeout=0.05)
+        pass

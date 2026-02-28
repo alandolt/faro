@@ -3,10 +3,7 @@ import time
 import requests
 from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
 import pymmcore_plus
-from useq._mda_event import SLMImage
-from useq import MDAEvent
 from rtm_pymmcore.core.dmd import DMD
-from rtm_pymmcore.core.controller import Controller, Analyzer
 
 
 class WakeUpLaser:
@@ -106,17 +103,6 @@ class Niesen(PyMMCoreMicroscope):
                 marker_style=marker_style,
                 calibration_points_DMD=calibration_points_DMD,
             )
-
-    def run_experiment(self, df_acquire):
-        """Run the experiment."""
-        pymmcore_plus.configure_logging(stderr_level="WARNING")
-        self.wl.run(wait_for_warmup=False)
-        self.analyzer = Analyzer(self.pipeline)
-        self.controller = Controller(
-            self.analyzer, self.mmc, self.queue, self.USE_AUTOFOCUS_EVENT,
-            dmd=self.dmd, power_properties=self.get_power_properties(),
-        )
-        self.controller.run(df_acquire)
 
     def post_experiment(self):
         """Post-process the experiment."""

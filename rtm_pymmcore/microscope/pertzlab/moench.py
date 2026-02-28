@@ -2,7 +2,6 @@ import pymmcore_plus
 import weakref
 
 from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
-from rtm_pymmcore.core.controller import Controller, Analyzer
 from rtm_pymmcore.core.dmd import DMD
 from useq._mda_event import SLMImage
 from pymmcore_plus.mda._engine import MDAEngine
@@ -114,6 +113,7 @@ class Moench(PyMMCoreMicroscope):
 
         self.affine_calibration_matrix = affine_calibration_matrix
         self.wakeup_dmd = None
+        self.dmd_needs_to_be_waken = self.DMD_NEEDS_TO_BE_WAKEN
         self.init_scope()
 
     def init_scope(self):
@@ -159,25 +159,6 @@ class Moench(PyMMCoreMicroscope):
                 calibration_points_DMD=calibration_points_DMD,
             )
             self.wakeup_dmd.run()
-
-    def run_experiment(self, df_acquire):
-        """Run the experiment."""
-        self.mmc.setProperty("Core", "TimeoutMs", 9000)
-        self.register_engine()
-        self.disable_log_output()
-        self.wakeup_dmd.stop()
-        time.sleep(2)
-        self.analyzer = Analyzer(self.pipeline)
-        self.controller = Controller(
-            self.analyzer,
-            self.mmc,
-            self.queue,
-            use_autofocus_event=self.USE_AUTOFOCUS_EVENT,
-            dmd=self.dmd,
-            dmd_needs_to_be_waken=self.DMD_NEEDS_TO_BE_WAKEN,
-            power_properties=self.get_power_properties(),
-        )
-        self.controller.run(df_acquire)
 
     def set_roi(self):
         self.mmc.clearROI()
@@ -343,7 +324,7 @@ class MoenchMDAEngine(MDAEngine):
                     )
                     time.sleep(1)
                 else:
-                    # different error → don't hide it
+                    # different error -> don't hide it
                     logger.warning("Failed to set XY position. %s", e)
                     raise
 

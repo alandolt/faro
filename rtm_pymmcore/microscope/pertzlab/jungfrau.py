@@ -14,7 +14,6 @@ from pymmcore_plus.mda._engine import MDAEngine
 from pymmcore_plus._logger import logger
 
 from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
-from rtm_pymmcore.core.controller import Controller, Analyzer
 
 
 class Jungfrau(PyMMCoreMicroscope):
@@ -46,19 +45,6 @@ class Jungfrau(PyMMCoreMicroscope):
         # Register the MDA engine early so other components using `mmc.mda`
         # will already have the correct engine registered.
         self.register_engine()
-
-    def run_experiment(self, df_acquire):
-        """Run the experiment."""
-        # Enable analyzer debug to show live storage/pipeline stats in notebook output
-        self.analyzer = Analyzer(self.pipeline)
-        # Ensure engine is registered (idempotent).
-        self.register_engine()
-
-        self.controller = Controller(
-            self.analyzer, self.mmc, self.queue, self.USE_AUTOFOCUS_EVENT,
-            power_properties=self.get_power_properties(),
-        )
-        self.controller.run(df_acquire)
 
     def post_experiment(self):
         """Post-process the experiment."""
