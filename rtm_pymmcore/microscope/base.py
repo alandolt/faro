@@ -1,43 +1,62 @@
 import os
 from rtm_pymmcore.core.dmd import DMD
-from queue import Queue
 
 
 class AbstractMicroscope:
-    """Base class for Microscope Init"""
+    """Base class defining the microscope interface.
+
+    The Controller depends only on this interface — it never touches
+    pymmcore-plus directly.  Subclasses implement the four MDA callables
+    plus optional ``resolve_group`` / ``resolve_power`` for channel
+    resolution.
+    """
 
     os.environ["QT_LOGGING_RULES"] = (
         "*.debug=false; *.warning=false"  # Fix to suppress PyQT warnings from napari-micromanager when running in a Jupyter notebook
     )
 
+    dmd = None                      # optional DMD device
+    use_autofocus_event = False     # optional autofocus
+    dmd_needs_to_be_waken = False   # optional DMD wake
+
     def __init__(self):
         self.dmd = None
-        self.queue = Queue()
-        self.pipeline = None
-        self.analyzer = None
-        self.controller = None
 
     def init_scope(self):
         """Initialize the microscope scope."""
         raise NotImplementedError("This method should be implemented in a subclass.")
 
-    def set_pipeline(self, pipeline):
-        self.pipeline = pipeline
+    # ------------------------------------------------------------------
+    # MDA interface — used by Controller
+    # ------------------------------------------------------------------
 
-    def validate_events(self, events) -> bool:
-        """Validate events against pipeline components and hardware.
+    def run_mda(self, event_iter):
+        """Start MDA acquisition. Returns thread/handle."""
+        raise NotImplementedError
 
-        Combines :meth:`pipeline.validate_pipeline` (signatures + required
-        metadata) with :meth:`validate_hardware` (channel configs + exposure/
-        power limits).
+    def connect_frame(self, callback):
+        """Connect frameReady callback: callback(img, event)."""
+        raise NotImplementedError
 
-        Returns True if **all** checks pass, False otherwise.
-        """
-        ok = True
-        if self.pipeline is not None:
-            ok = self.pipeline.validate_pipeline(events) and ok
-        ok = self.validate_hardware(events) and ok
-        return ok
+    def disconnect_frame(self, callback):
+        """Disconnect frameReady callback."""
+        raise NotImplementedError
+
+    def cancel_mda(self):
+        """Cancel running MDA."""
+        raise NotImplementedError
+
+    def resolve_group(self, config_name) -> str:
+        """Return channel group for config name. Optional override."""
+        return ""
+
+    def resolve_power(self, channel):
+        """Return (device, property, power) or None. Optional override."""
+        return None
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
 
     def validate_hardware(self, events) -> bool:
         """Validate events against hardware capabilities.
@@ -47,9 +66,9 @@ class AbstractMicroscope:
         """
         return True
 
-    def run_experiment(self, events=None, *, df_acquire=None, stim_mode="current"):
-        """Run the experiment."""
-        raise NotImplementedError("This method should be implemented in a subclass.")
+    # ------------------------------------------------------------------
+    # DMD
+    # ------------------------------------------------------------------
 
     def calibrate_dmd(self):
         "Calibrate the DMD if it is not already calibrated." ""
