@@ -1,201 +1,216 @@
 # rtm-pymmcore
 
-**Real-time feedback control microscopy using `pymmcore` as an interface.**
+**Real-time feedback control microscopy.**
 
-## Overview
+rtm-pymmcore acquires images, segments cells, extracts features, tracks them over time, and generates stimulation masks, all while the experiment is running. This enables closed-loop feedback control: stimulation patterns can be computed from the latest segmentation and applied within the same or next timepoint.
 
-This repository provides a framework for real-time cell segmentation and feature extraction during live microscopy experiments, leveraging the `pymmcore` library for microscope control. This approach enables immediate feedback control, allowing for dynamic adjustments based on observed cellular behavior. For instance, in systems with spatial stimulation capabilities, stimulation areas can be automatically defined based on real-time cell morphology analysis.
+## Architecture
 
-Key applications include:
+```
+Pipeline   ◀──▶  Controller   ◀──▶   Microscope
+────────         ──────────          ──────────
+- segment        - orchestrate       - stage
+- track            experiment        - camera
+- extract                            - DMD/SLM
+  features                           - live cells
+```
+**Microscope**: hardware interface. Any microscope that speaks implements [useq-schema](https://github.com/pymmcore-plus/useq-schema) can be used. Works great with µManger / [pymmcore-plus](https://github.com/pymmcore-plus/pymmcore-plus).
 
-* **Real-time feedback control:** Dynamically adjusting experimental parameters based on live cell analysis.
-* **Streamlined experiments:** Minimizing post-processing requirements by performing analysis during acquisition.
-* **Dynamic stimulation:** Targeting specific cells or regions based on their morphology or behavior.
+**Pipeline**: modular image processing. Performs segmentation, tracking, feature extraction. Decides if/where to photoactivate the sample.
 
-## Key Features
+**Controller**: experiment orchestrator. Queues acquisition events to the microscope, dispatches frames to the pipeline, and coordinates stimulation timing.
 
-* **Integration with `pymmcore-plus`:** Utilizes the advanced features of `pymmcore-plus` for robust microscope control and image acquisition.
-* **Modular image processing pipeline:** Allows for flexible integration of different segmentation, stimulation, feature extraction, and tracking modules.
-* **External segmentation engine support:** Option to offload computationally intensive segmentation tasks to an external server using `imaging-server-kit`.
-* **Comprehensive data handling:** Stores acquisition positions, stimulation parameters, and single-cell results in structured dataframes.
-* **User-friendly visualization and analysis tools:** Provides scripts for visualizing individual fields of view and generating reports.
-* **Jupyter Notebook-based workflow:** Enables step-by-step execution and easy customization of the pipeline.
+## Quickstart
 
-## Workflow
+Try **`experiments/demo_sim_optogenetic/`** notebook to runs a complete optogenetic feedback experiment on a simulated microscope, no hardware required.
 
-The real-time microscopy pipeline follows these main steps:
-
-1.  **Defining Acquisition Positions & Stimulation Parameters:**
-    * A Pandas DataFrame is created to store the coordinates of acquisition positions. These positions can be interactively selected using GUI widgets provided by `pymmcore-plus`.
-    * Stimulation parameters, such as pulse duration and intensity, are defined and configured within the Jupyter notebook environment.
-
-2.  **Image Acquisition & Processing:**
-    * The acquisition position DataFrame is passed to the core of the `rtm-pymmcore` pipeline.
-    * The pipeline orchestrates image acquisition, followed by a series of processing steps:
-        * **Segmentation:** Identifying individual cells within the acquired images.
-        * **Stimulation:** Applying a defined stimulation pattern based on segmentation results or other criteria.
-        * **Feature Extraction :** Measuring relevant characteristics of the segmented cells (e.g., size, shape, intensity).
-        * **Tracking:** Following individual cells over time across multiple frames.
-    * Optionally, an external segmentation engine running via `imaging-server-kit` can be utilized for segmentation.
-    * Single-cell results, including extracted features and tracking information, are stored in a structured Pandas DataFrame.
-
-3.  **Data Visualization & Analysis:**
-    * The `viewer` script enables visualization of individual fields of view (FOVs) overlaid with stimulation conditions and segmentation masks.
-    * The `data_analysis_plotting` scripts provide tools for generating reports and performing further analysis on the collected data.
-
-### Image Processing Steps
-
-The image processing pipeline is designed with modularity in mind. Each step is implemented as an independent module, allowing you to load and utilize specific modules without requiring dependencies for others. This is particularly useful when you only need a subset of the processing steps (e.g., using only `stardist` for segmentation without installing `cellpose`).
-
-* **Image Segmentation:**
-    * This step focuses on identifying and delineating individual cells within the acquired images.
-    * The desired segmentation engine(s) and their specific parameters are configured in the Jupyter notebook using a list of dictionaries.
-    ```python
-    # Example of a segmentation engine configuration
-    from rtm_pymmcore.data_structures SegmentationMethod
-    segmentators = [
-        SegmentationMethod(
-            name="labels",
-            segmentation_class=SegmentorStardist()
-            use_channel=0,
-            save_tracked=True,
-            ),
-        SegmentationMethod(
-            name="cell_body",
-            segmentation_class=SegmentorCellpose(model="cyto3", diameter=75, flow_threshold=0.4),
-            use_channel=1,
-            save_tracked=True,
-            ),
-    ]
-    ```
-
-* **Stimulation Engine:**
-    * This optional step allows for applying targeted stimulation based on the segmentation results.
-    * It can utilize a Digital Micromirror Device (DMD) for structured illumination, enabling stimulation of specific cells or regions defined by the segmentation masks.
-    * Alternatively, if no DMD is available, full field of view stimulation will be performed.
-    * The stimulation mask generated from the segmentation is sent to the DMD or microscope control system to apply the desired stimulation pattern.
-
-    ```python
-    stimulator = StimPercentageOfCell()
-    ```
-
-* **Feature Extraction:**
-    * In this step, quantitative features are extracted from the segmented cells.
-    * The pipeline currently everages the `scikit-image` library for various feature extraction functionalities.
-    * Two example feature extractors are provided:
-        * `SimpleFE`: Extracts basic features like cell position and area. You can specify which segmentation mask to use for feature extraction.
-        * A more advanced feature extractor for analyzing ERK activity based on an ERK-KTR translocation biosensor. This extractor utilizes both the segmented cell images and the original acquired image for each time point.
-
-    ```python
-    feature_extractor = SimpleFE("labels") # Extract features from the segmentation named "celllabelsose_cyto3"
-    # Example of a more complex feature extractor
-    # feature_extractor = FE_ErkKtr()
-    ```
-
-* **Tracker:**
-    * This module enables tracking individual cells over time across consecutive image frames.
-    * It utilizes the `trackpy` library as its backend for robust cell tracking.
-    * The tracker analyzes the segmented cells to establish correspondences between frames, allowing for the study of cell movement and dynamics.
-
-    ```python
-    tracker = TrackerTrackpy(search_range=30) # Example: Set the maximum search distance for tracking to 30 pixels
-    ```
-
-**Important Considerations:**
-
-* You can freely combine any of the provided modules to create a customized image processing pipeline tailored to your specific experimental needs.
-* It is also possible to develop and integrate your own custom modules into the pipeline.
-* If a particular processing step is not required for your experiment, you can simply set the corresponding module to `None` in your Jupyter notebook configuration.
-
-### Microscope Setup
-
-The `rtm-pymmcore` workflow relies on a **uManager configuration file** to define the microscope hardware setup. This configuration file is essential for controlling the microscope and acquiring images. The configuration file must include:
-
-* A `setup` group containing a preset named `Startup`. This preset will be automatically executed when the script initializes, typically configuring essential hardware components.
-* Additional presets for each fluorophore used in the experiment. These presets should define the appropriate settings for filters, lasers, and other optical elements required for imaging each fluorescent channel (e.g., presets named after the fluorophores like `GFP`, `mCherry`, etc.).
-
-#### Example: Using the Micro-Manager Demo Microscope
 ```python
-from rtm_pymmcore.microscope.MMDemo import MMDemo
-mic = MMDemo()
+# 1. Set microscope
+mic = UniMMCoreSimulation(mmc=mmc)
+mic.init_scope()
+
+# 2. Assemble image processing pipeline
+pipeline = ImageProcessingPipeline(
+    storage_path="/path/to/experiment",
+    segmentators=[SegmentationMethod("labels", OtsuSegmentator(), use_channel=0, save_tracked=True)],
+    feature_extractor=SimpleFE("labels"),
+    tracker=TrackerTrackpy(),
+    stimulator=MoveUp(),
+)
+
+# 3. Define experiment parameters
+events = RTMSequence(
+    time_plan={"interval": 5.0, "loops": 20},
+    stage_positions=[{"x": 256, "y": 256}],
+    channels=[{"config": "BF", "exposure": 50}],
+    stim_channels=[{"config": "Cyan", "exposure": 50}],
+    stim_frames=range(5, 20),
+)
+
+# 4. Run!
+ctrl = Controller(mic, pipeline)
+ctrl.run_experiment(list(events), stim_mode="current")
 ```
 
-#### Example: Using a Real Microscope (e.g., "Jungfrau")
+## Pipeline
+
+The pipeline is modular, each component is independent and can be swapped or set to `None`.
+
+| Component | Purpose | Examples |
+|-----------|---------|----------|
+| **Segmentation** | Identify cells in images | `OtsuSegmentator`, `SegmentorCellpose`, `SegmentatorStardist`, remote via [imaging-server-kit](https://github.com/imaging-server-kit) |
+| **Stimulation** | Generate masks for DMD/SLM | `StimWholeFOV`, `StimPercentageOfCell`, `CenterCircle`, `StimLine` |
+| **Feature extraction** | Measure cell properties | `SimpleFE` (position, area), `FE_ErkKtr` (ERK-KTR c/n ratio) |
+| **Tracking** | Link cells across frames | `TrackerTrackpy` (via [trackpy](https://github.com/soft-matter/trackpy)) |
+
 ```python
-from rtm_pymmcore.microscope.Jungfrau import Jungfrau
-mic = Jungfrau()
+pipeline = ImageProcessingPipeline(
+    storage_path="/path/to/experiment",
+    segmentators=segmentators,  # list of SegmentationMethod
+    feature_extractor=fe,
+    tracker=tracker,           
+    stimulator=stimulator,
+)
 ```
-The `mic` object provides access to the configured microscope and is used throughout the workflow.
+## Controller
 
-#### Structure of a Microscope Subclass
+The Controller converts RTMEvents to MDAEvents, queues them through the microscope, and dispatches frames to the pipeline.
 
-Each microscope subclass must inherit from `AbstractMicroscope` and implement the following methods:
+### Experiment Definition
 
-- **`init_scope(self)`**
-  Initializes the microscope, loads the appropriate Micro-Manager configuration file, and sets up any required hardware groups or settings. Is configured to run automatically when class is instantiated.
+Experiments are defined as `RTMSequence` objects — an extension of useq's `MDASequence` with stimulation and optocheck support. Multiple phases can be concatenated with `+`:
 
-- **`run_experiment(self)`**
-  Prepares the system for running an experiment, e.g., by configuring logging or hardware state (e.g. wakeup lasers periodically).
+```python
+from rtm_pymmcore.core.data_structures import Channel, PowerChannel, RTMSequence
 
-- **`post_experiment(self)`**
-  (Optional) Handles any post-processing or cleanup after the experiment (e.g. re-enables sleep on lasers).
+stim = PowerChannel("CyanStim", exposure=100, group="TTL_ERK", power=10)
 
-For more details on how to implement a custom microscope subclass, refer to the `rtm_pymmcore/microscope/AbstractMicroscope.py` file.
+phase_1 = RTMSequence(
+    time_plan={"interval": 60.0, "loops": 100},
+    stage_positions=fov_positions,
+    channels=[{"config": "miRFP", "exposure": 300}],
+    stim_channels=(stim,),
+    stim_frames=range(10, 100),
+)
 
-Briefly, to add support for a new microscope:
+phase_2 = RTMSequence(
+    time_plan={"interval": 60.0, "loops": 150},
+    stage_positions=fov_positions,
+    channels=[{"config": "miRFP", "exposure": 300}],
+    stim_channels=(stim,),
+    stim_frames=range(30, 120),
+)
 
-1. **Create a new Python file** in `rtm_pymmcore/microscope/`, e.g., `MyCustomScope.py`.
-2. **Implement a class** that inherits from `AbstractMicroscope` and overrides the required methods as shown above.
-3. **Import and instantiate** your class in your notebook or script:
-    ```python
-    from rtm_pymmcore.microscope.MyCustomScope import MyCustomScope
-    mic = MyCustomScope()
-    ```
+events = phase_1 + phase_2
+```
 
-You can add any additional properties or methods needed for your specific hardware, as long as the required interface is implemented.
+### Running
 
-### Running the Script
+```python
+from rtm_pymmcore.core.controller import Controller
 
-The workflow is designed to be executed step by step using Jupyter notebooks. This allows for interactive control and monitoring of the experiment. A cleaned, canonical example demonstrating the recommended API pattern is provided, plus several domain-specific demo notebooks:
+ctrl = Controller(mic, pipeline)
+ctrl.run_experiment(events, stim_mode="current")
+```
 
-- **`01_full_FOV_stimulation_ERK_new_API.ipynb`** (recommended): the cleaned example showing how to generate acquisition schedules using `utils.generate_df_acquire`, how to map stimulation treatments with `utils.apply_stim_treatments_to_df_acquire`, and how to run one or multiple `df_acquire` objects sequentially. Use this notebook as the main reference for reproducible experiment scripting with the repository.
+`validate_events()` runs automatically before the experiment starts (disable with `validate=False`). It checks both pipeline compatibility and hardware limits.
 
-Other example notebooks (kept as domain-specific demos and updated to reference the new API):
+**Stimulation modes:**
+* `"current"`: acquire frame, wait for segmentation mask, then stimulate in the same timepoint
+* `"previous"`: stimulate using the mask from the previous timepoint, then acquire
 
-- **`00_NoStim.ipynb`**: run the pipeline without stimulation. Updated to include a compact example that uses `utils.generate_df_acquire` to create the acquisition schedule and a pointer to the `01` example for more advanced patterns.
+## Microscope
 
-- **`02_CellMigration.ipynb`** / **`02_CellMigration_Mic.ipynb`**: directed cell migration demos. `02_CellMigration_Mic.ipynb` was updated with a small example showing `utils.generate_df_acquire` and how to apply stim-treatment mapping.
+The microscope provides the hardware interface. Any microscope that implements the useq-schema MDA protocol can be used, the Controller never depends on pymmcore-plus directly.
 
-- **`03_LineStimulation.ipynb`**: line-pattern stimulation demo.
+### Class Hierarchy
 
+```
+AbstractMicroscope                   # useq MDA interface
+  ├─ PyMMCoreMicroscope              # implements via pymmcore-plus / CMMCorePlus
+  │    ├─ MMDemo                     # Micro-Manager demo hardware
+  │    ├─ UniMMCoreSimulation        # simulated microscope
+  │    ├─ PymmcoreProxyMic           # remote via pymmcore-proxy
+  │    └─ pertzlab/
+  │         ├─ Jungfrau
+  │         ├─ Moench
+  │         └─ Niesen
+  └─ InscoperMicroscope              # implements via Inscoper SDK (planned)
+```
+
+### Interface
+
+| Method | Purpose |
+|--------|---------|
+| `run_mda(event_iter)` | Start MDA acquisition, returns thread handle |
+| `connect_frame(callback)` | Connect frameReady: `callback(img, event)` |
+| `disconnect_frame(callback)` | Disconnect frameReady |
+| `cancel_mda()` | Cancel running MDA |
+| `resolve_group(config_name)` | Return channel group for a config name (optional) |
+| `resolve_power(channel)` | Return `(device, property, power)` (optional) |
+| `validate_hardware(events)` | Check events against hardware limits (optional) |
+| `init_scope()` | Load config, set up hardware |
+| `post_experiment()` | Cleanup after experiment |
+
+`PyMMCoreMicroscope` implements the MDA methods via `CMMCorePlus`. Concrete subclasses typically only need `init_scope()`.
+
+## Micro-Manager / pymmcore-plus
+
+The `PyMMCoreMicroscope` branch uses [pymmcore-plus](https://github.com/pymmcore-plus/pymmcore-plus) as its hardware layer. Each microscope needs a **Micro-Manager configuration file** with:
+
+* Channel presets for each fluorophore (e.g., `GFP`, `mCherry`, `miRFP`)
+* A `System > Startup` preset for initial hardware configuration
+* Device properties for cameras, light sources, filter wheels, etc.
+
+For microscopes with controllable light source power, define a `POWER_PROPERTIES` mapping so `PowerChannel` objects resolve to the correct device:
+
+```python
+POWER_PROPERTIES = {
+    "CyanStim": ("Spectra", "Cyan_Level"),  # config_name → (device, property)
+}
+```
+
+## Adding Your Own µManager Microscope
+
+Create a new file in `rtm_pymmcore/microscope/` and inherit from `PyMMCoreMicroscope`:
+
+```python
+import pymmcore_plus
+from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
+
+class MyScope(PyMMCoreMicroscope):
+    MICROMANAGER_PATH = "C:\\Program Files\\Micro-Manager-2.0"
+    MICROMANAGER_CONFIG = "path/to/config.cfg"
+    CHANNEL_GROUP = "Channel"
+
+    def __init__(self):
+        super().__init__()
+        pymmcore_plus.use_micromanager(self.MICROMANAGER_PATH)
+        self.mmc = pymmcore_plus.CMMCorePlus()
+        self.init_scope()
+
+    def init_scope(self):
+        self.mmc.loadSystemConfiguration(self.MICROMANAGER_CONFIG)
+        self.mmc.setChannelGroup(channelGroup=self.CHANNEL_GROUP)
+
+    def post_experiment(self):
+        pass  # optional cleanup
+```
+
+For DMD support, set up `self.dmd` in `__init__()`, see `pertzlab/moench.py` for an example.
 
 ## Installation
 
-1.  **Clone the repository:**
-    ```bash
-    git clone [https://github.com/your-username/rtm-pymmcore.git](https://github.com/pertzlab/rtm-pymmcore.git)
-    cd rtm-pymmcore
-    ```
-
-2.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    # Install optional dependencies if needed (e.g., for specific segmentation engines)
-    # pip install cellpose stardist trackpy scikit-image
-    ```
-
-## Usage
-
-The recommended way to use this pipeline is by running the provided Jupyter notebooks. Each notebook demonstrates a specific workflow.
-
-1.  Ensure you have a Micro-Manager configuration file set up according to the requirements outlined in the "Microscope Setup" section.
-2.  Open the desired Jupyter notebook (e.g., `00_NoStim_MMDemo.ipynb`).
-3.  Follow the instructions within the notebook to configure the experiment parameters and execute the pipeline step by step.
+```bash
+git clone https://github.com/pertzlab/rtm-pymmcore.git
+cd rtm-pymmcore
+pip install -r requirements.txt
+```
 
 ## Contributing
 
-Contributions to this repository are welcome. Please feel free to submit pull requests or open issues to suggest improvements or report bugs.
+Contributions are welcome. Please submit pull requests or open issues.
 
 ## License
 
-This project is licensed under the MIT License. See the `LICENSE` file for more details.
+MIT License. See `LICENSE` for details.
