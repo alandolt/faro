@@ -610,3 +610,126 @@ class TestStimWithImagePrevious:
         assert len(particles) == 2
         for pid in particles:
             assert len(df[df["particle"] == pid]) == N_TIMEPOINTS
+
+
+# ===================================================================
+# Stress test helpers
+# ===================================================================
+
+
+class SlowSegmentator(OtsuSegmentator):
+    """OtsuSegmentator that sleeps *delay* seconds per frame to simulate load."""
+
+    def __init__(self, delay: float = 1.0):
+        super().__init__()
+        self._delay = delay
+
+    def segment(self, image: np.ndarray) -> np.ndarray:
+        time.sleep(self._delay)
+        return super().segment(image)
+
+
+def run_and_wait_long(ctrl: Controller, events: list[RTMEvent], stim_mode: str = "current",
+                      timeout: float = 120):
+    """Like run_and_wait but with a longer timeout for slow pipelines."""
+    ctrl.run_experiment(events, stim_mode=stim_mode, validate=False)
+
+    analyzer = ctrl._analyzer
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        storage_empty = analyzer._storage_queue.qsize() == 0
+        with analyzer.task_lock:
+            pipeline_idle = analyzer.active_pipeline_tasks == 0
+        deferred_empty = analyzer._deferred_queue.qsize() == 0
+        if storage_empty and pipeline_idle and deferred_empty:
+            break
+        time.sleep(0.5)
+
+    analyzer.shutdown(wait=True)
+
+
+# ===================================================================
+# Test Class 9: Stress test — slow segmentation, rapid acquisition
+# ===================================================================
+
+
+N_STRESS_FRAMES = 50
+STRESS_SEG_DELAY = 0.1  # seconds per segmentation
+
+
+class TestStressSlowSegmentation:
+    """Acquire 20 frames with no delay while segmentation takes 1s each.
+
+    Verifies that the deferred-queue mechanism in Analyzer eventually
+    processes every frame: all raw images stored, all segmentation masks
+    produced, all stim masks produced, and tracking covers every frame.
+    """
+
+    STIM_FRAMES = tuple(range(5, 15))  # stim on frames 5-14
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir):
+        self.path = tmp_dir
+        self.pipeline = ImageProcessingPipeline(
+            storage_path=self.path,
+            segmentators=[SegmentationMethod("labels", SlowSegmentator(STRESS_SEG_DELAY), 0, False)],
+            tracker=TrackerTrackpy(search_range=50, memory=3),
+            feature_extractor=SimpleFE("labels"),
+            stimulator=CenterCircle(),
+        )
+        self.mic = CircleMicroscope()
+        self.ctrl = Controller(self.mic, self.pipeline)
+        self.events = make_events(N_STRESS_FRAMES, stim_frames=self.STIM_FRAMES)
+        run_and_wait_long(self.ctrl, self.events, stim_mode="current",
+                          timeout=N_STRESS_FRAMES * STRESS_SEG_DELAY + 60)
+
+    def test_all_raw_images_stored(self):
+        raw_dir = os.path.join(self.path, "raw")
+        files = [f for f in os.listdir(raw_dir) if f.endswith(".tiff")]
+        assert len(files) == N_STRESS_FRAMES, (
+            f"Expected {N_STRESS_FRAMES} raw TIFFs, got {len(files)}"
+        )
+
+    def test_all_segmentation_masks_produced(self):
+        labels_dir = os.path.join(self.path, "labels")
+        files = [f for f in os.listdir(labels_dir) if f.endswith(".tiff")]
+        assert len(files) == N_STRESS_FRAMES, (
+            f"Expected {N_STRESS_FRAMES} label masks, got {len(files)}"
+        )
+
+    def test_all_stim_masks_produced(self):
+        stim_dir = os.path.join(self.path, "stim_mask")
+        files = [f for f in os.listdir(stim_dir) if f.endswith(".tiff")]
+        assert len(files) == N_STRESS_FRAMES, (
+            f"Expected {N_STRESS_FRAMES} stim masks, got {len(files)}"
+        )
+
+    def test_stim_masks_nonzero_on_stim_frames(self):
+        stim_dir = os.path.join(self.path, "stim_mask")
+        files = sorted(os.listdir(stim_dir))
+        for i, f in enumerate(files):
+            mask = tifffile.imread(os.path.join(stim_dir, f))
+            if i in self.STIM_FRAMES:
+                assert mask.max() > 0, f"Frame {i}: stim frame should have nonzero mask"
+
+    def test_tracking_covers_all_frames(self):
+        tracks_dir = os.path.join(self.path, "tracks")
+        parquet_files = [f for f in os.listdir(tracks_dir) if f.endswith(".parquet")]
+        assert len(parquet_files) >= 1
+        df = pd.read_parquet(os.path.join(tracks_dir, parquet_files[0]))
+        particles = df["particle"].unique()
+        assert len(particles) == 2, f"Expected 2 particles, got {len(particles)}"
+        for pid in particles:
+            rows = df[df["particle"] == pid]
+            assert len(rows) == N_STRESS_FRAMES, (
+                f"Particle {pid}: expected {N_STRESS_FRAMES} rows, got {len(rows)}"
+            )
+
+    def test_segmentation_quality_maintained(self):
+        """Even under load, every frame should segment into exactly 2 labels."""
+        labels_dir = os.path.join(self.path, "labels")
+        files = sorted([f for f in os.listdir(labels_dir) if f.endswith(".tiff")])
+        for f in files:
+            labels = tifffile.imread(os.path.join(labels_dir, f))
+            unique = set(np.unique(labels)) - {0}
+            assert len(unique) == 2, f"{f}: expected 2 labels, got {len(unique)}"

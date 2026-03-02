@@ -257,25 +257,6 @@ class ImageProcessingPipeline:
                 f"{metadata['fov']}_phase_{metadata['phase_id']}_latest.parquet"
             )
 
-        if self.stimulator is not None and not isinstance(self.stimulator, StimWithPipeline):
-            timeout_time = 60
-        else:
-            timeout_time = 20
-
-        try:
-            # First attempt: pull from queue
-            df_old = fov_obj.tracks_queue.get(block=True, timeout=timeout_time)
-
-        except Exception as e:
-            print("Exception", e)
-            # If queue is empty → fallback to file-based recovery
-            file_path = os.path.join(self.storage_path, "tracks", filename_for_parquet)
-            try:
-                df_old = pd.read_parquet(file_path)
-            except FileNotFoundError:
-                df_old = pd.DataFrame()
-                print("Attention df lost")
-
         if metadata["img_type"] == ImgType.IMG_OPTOCHECK:
             n_optocheck_channels = len(metadata["optocheck_channels"])
             n_channels = len(metadata["channels"])
@@ -285,24 +266,15 @@ class ImageProcessingPipeline:
         shape_img = (img.shape[-2], img.shape[-1])
         metadata["img_shape"] = shape_img
 
+        # --- Segmentation + position extraction (no dependency on previous frame) ---
+        # Run BEFORE waiting for df_old so it overlaps with the previous
+        # frame's tracking on another worker thread.
         segmentation_results = {}
         if self.segmentators is not None:
             for seg in self.segmentators:
                 segmentation_results[seg.name] = seg.segmentation_class.segment(
                     img[seg.use_channel, :, :]
                 )
-        # if metadata["stim"] == True:
-        #     stim_mask, labels_stim = self.stimulator.get_stim_mask(
-        #         segmentation_results, metadata, img
-        #     )
-        #     fov_obj.stim_mask_queue.put_nowait(stim_mask)
-        # if labels_stim is not None:
-        #     labels_stim = np.unique(labels_stim[labels_stim > 0])
-        #     metadata["stim_labels"] = labels_stim
-        # TODO: Reenable, but make exception for stimwholeframe
-        # mark in the df which cells have been stimulated
-        # stim_index = np.where((df_tracked['frame']==metadata['timestep']) & (df_tracked['label'].isin(labels_stim)))[0]
-        # df_tracked.loc[stim_index,'stim']=True
 
         # 1. Extract positions (label, x, y) for tracking
         fov_obj.n_cells_latest = int(segmentation_results["labels"].max())
@@ -319,7 +291,26 @@ class ImageProcessingPipeline:
         else:
             df_new = pd.DataFrame([metadata])
 
-        # 2. Track
+        # --- Wait for previous frame's tracked DataFrame ---
+        if self.stimulator is not None and not isinstance(self.stimulator, StimWithPipeline):
+            timeout_time = 60
+        else:
+            timeout_time = 20
+
+        try:
+            df_old = fov_obj.tracks_queue.get(block=True, timeout=timeout_time)
+
+        except Exception as e:
+            print("Exception", e)
+            # If queue is empty → fallback to file-based recovery
+            file_path = os.path.join(self.storage_path, "tracks", filename_for_parquet)
+            try:
+                df_old = pd.read_parquet(file_path)
+            except FileNotFoundError:
+                df_old = pd.DataFrame()
+                print("Attention df lost")
+
+        # 2. Track (needs df_old from previous frame)
         if self.tracker is not None:
             df_tracked = self.tracker.track_cells(df_old, df_new, fov_obj)
         else:
@@ -367,11 +358,11 @@ class ImageProcessingPipeline:
                     df_tracked,
                     metadata,
                 )
-        fov_obj.tracks_queue.put(df_tracked)
-        fov_obj.fov_timestep_counter += 1
 
-        if not df_tracked.empty:
-            df_tracked = df_tracked.drop(
+        # --- Parquet save (shared filename — must finish before unblocking next frame) ---
+        df_to_save = df_tracked
+        if not df_to_save.empty:
+            df_to_save = df_to_save.drop(
                 columns=["img_type"], errors="ignore"
             )
 
@@ -388,11 +379,11 @@ class ImageProcessingPipeline:
         existing_columns = {
             col: dtype
             for col, dtype in df_datatypes.items()
-            if col in df_tracked.columns
+            if col in df_to_save.columns
         }
 
         try:
-            df_tracked = df_tracked.astype(existing_columns)
+            df_to_save = df_to_save.astype(existing_columns)
         except ValueError as e:
             print(e)
             print("Error in converting datatypes. df_tracked:")
@@ -401,10 +392,17 @@ class ImageProcessingPipeline:
             fov_obj.fov_timestep_counter % self.only_save_every_n_frames == 0
             or fov_obj.fov_timestep_counter == 0
         ):
-            df_tracked.to_parquet(
+            df_to_save.to_parquet(
                 os.path.join(self.storage_path, "tracks", filename_for_parquet),
                 compression="zstd",
             )
+
+        # --- Unblock the next frame ---
+        # Parquet is saved above (shared filename can't race).
+        # TIFF saves below use unique per-frame filenames, so they're safe
+        # to run concurrently with the next frame.
+        fov_obj.tracks_queue.put(df_tracked)
+        fov_obj.fov_timestep_counter += 1
 
         if self.stimulator is not None:
             if metadata["stim"]:
@@ -434,7 +432,7 @@ class ImageProcessingPipeline:
             ):
                 if segmentator.save_tracked:
                     tracked_label = labels_to_particles(
-                        value, df_tracked, metadata=metadata
+                        value, df_to_save, metadata=metadata
                     )
                     store_img(tracked_label, metadata, self.storage_path, "particles")
                     store_img(value, metadata, self.storage_path, key)
