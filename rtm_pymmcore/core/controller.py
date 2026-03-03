@@ -59,8 +59,7 @@ class Analyzer:
 
         # High-priority: storage queue (separate from pipeline)
         self._storage_queue: Queue = Queue(maxsize=max_queue_size)
-        # Deferred / control flags must be initialized BEFORE starting threads
-        self._is_running = True
+        # Stop event must be initialized BEFORE starting threads
         self._stop_event = threading.Event()
 
         self._storage_thread = threading.Thread(
@@ -88,11 +87,17 @@ class Analyzer:
         return self.fov_states[fov_index]
 
     def _storage_worker(self):
-        """Worker thread for storage - high priority, never skipped."""
-        while self._is_running and not self._stop_event.is_set():
+        """Worker thread for storage - high priority, never skipped.
+
+        Drains all remaining items before exiting after ``_stop_event`` is set,
+        so no queued images are silently dropped.
+        """
+        while True:
             try:
                 img, event, metadata, folder = self._storage_queue.get(timeout=0.5)
             except QueueEmpty:
+                if self._stop_event.is_set():
+                    break
                 continue
 
             try:
@@ -231,18 +236,23 @@ class Analyzer:
         """Worker thread that processes deferred images when capacity becomes available.
 
         Loads images from disk instead of keeping them in RAM.
+        Drains all remaining items before exiting after ``_stop_event`` is set.
+        During shutdown the capacity check is skipped so the queue drains
+        instead of spinning on requeue.
         """
-        while self._is_running and not self._stop_event.is_set():
+        while True:
             try:
-                # Try to get deferred metadata (non-blocking check)
                 event, metadata, folder = self._deferred_queue.get(timeout=1.0)
             except QueueEmpty:
+                if self._stop_event.is_set():
+                    break
                 continue
 
             try:
-                # Check if we have capacity now
+                # During shutdown, skip capacity check to ensure the queue drains.
+                shutting_down = self._stop_event.is_set()
                 with self.task_lock:
-                    if self.active_pipeline_tasks >= self.max_queue_size:
+                    if not shutting_down and self.active_pipeline_tasks >= self.max_queue_size:
                         # Still overloaded - put back in queue and wait
                         self._deferred_queue.put_nowait((event, metadata, folder))
                         if self.debug:
@@ -252,7 +262,7 @@ class Analyzer:
                         time.sleep(0.5)
                         continue
 
-                    # Capacity available - increment counter
+                    # Capacity available (or shutting down) - increment counter
                     self.active_pipeline_tasks += 1
 
                 # Construct file path to load image from disk
@@ -277,8 +287,9 @@ class Analyzer:
                 except (RuntimeError, OSError):
                     with self.task_lock:
                         self.active_pipeline_tasks -= 1
-                    # Put back in queue for retry
-                    self._deferred_queue.put_nowait((event, metadata, folder))
+                    if not shutting_down:
+                        # Put back in queue for retry (only when not shutting down)
+                        self._deferred_queue.put_nowait((event, metadata, folder))
 
             except Exception as e:
                 print(f"Error processing deferred image: {type(e).__name__}: {str(e)}")
@@ -334,29 +345,19 @@ class Analyzer:
             )
 
     def shutdown(self, wait: bool = True):
-        """Shutdown storage thread, deferred thread, and pipeline executor."""
+        """Shutdown storage thread, deferred thread, and pipeline executor.
+
+        Workers drain their queues before exiting, so setting ``_stop_event``
+        first and then joining the threads guarantees no queued items are lost.
+        """
         self._stop_event.set()
 
         if wait:
-            # Wait for storage queue to empty
-            try:
-                self._storage_queue.join()
-            except Exception:
-                pass
+            # Workers drain remaining items before exiting, so joining
+            # the threads is sufficient (no queue.join() needed).
+            self._storage_thread.join(timeout=30)
+            self._deferred_thread.join(timeout=30)
 
-            # Wait for deferred queue to empty
-            try:
-                self._deferred_queue.join()
-            except Exception:
-                pass
-
-            # Wait for storage thread to finish
-            self._storage_thread.join(timeout=10)
-
-            # Wait for deferred thread to finish
-            self._deferred_thread.join(timeout=10)
-
-        self._is_running = False
         self.executor.shutdown(wait=wait)
 
     def get_stats(self) -> dict:
