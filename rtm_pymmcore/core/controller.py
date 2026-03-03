@@ -86,6 +86,41 @@ class Analyzer:
             self.fov_states[fov_index] = FovState()
         return self.fov_states[fov_index]
 
+    @property
+    def stimulator_needs_data(self) -> bool:
+        """True if stim masks come from the mask queue (StimWithImage/StimWithPipeline).
+
+        False if generated from metadata alone (base Stim) or no stimulator configured.
+        """
+        if self.pipeline is None or self.pipeline.stimulator is None:
+            return False
+        return isinstance(self.pipeline.stimulator, (StimWithImage, StimWithPipeline))
+
+    def get_stim_mask(
+        self, fov_index: int, metadata: dict, *, timeout: float = 80
+    ) -> np.ndarray | None:
+        """Return a stim mask array, or None if unavailable.
+
+        Dispatches by stimulator type:
+        - Queue-based (StimWithImage / StimWithPipeline): blocks on fov_state.stim_mask_queue.
+        - Metadata-only (base Stim): calls stimulator.get_stim_mask() directly.
+        - No stimulator: returns None.
+        """
+        if self.pipeline is None or self.pipeline.stimulator is None:
+            return None
+        stimulator = self.pipeline.stimulator
+        if isinstance(stimulator, (StimWithImage, StimWithPipeline)):
+            fov_state = self.get_fov_state(fov_index)
+            try:
+                return fov_state.stim_mask_queue.get(block=True, timeout=timeout)
+            except Exception as e:
+                print(f"Warning: Stimulation mask not ready (timeout): {e}")
+                return None
+        else:
+            metadata["img_shape"] = metadata.get("img_shape", (1024, 1024))
+            stim_mask, _ = stimulator.get_stim_mask(metadata=metadata)
+            return stim_mask
+
     def _storage_worker(self):
         """Worker thread for storage - high priority, never skipped.
 
@@ -650,30 +685,11 @@ class Controller:
 
                     # 1. Stim (mask from previous frame)
                     if has_stim and stim_events and self._mic.dmd:
-                        stimulator = self._analyzer.pipeline.stimulator
-                        if not isinstance(stimulator, (StimWithImage, StimWithPipeline)):
+                        if not self._analyzer.stimulator_needs_data or fov_index in _stim_pending:
                             slm = self._build_stim_slm(rtm_event)
                             for ev in stim_events:
                                 ev = ev.model_copy(update={"slm_image": slm})
                                 self._put_event(ev)
-                        elif fov_index in _stim_pending:
-                            fov_state = self._analyzer.get_fov_state(fov_index)
-                            try:
-                                stim_mask = fov_state.stim_mask_queue.get(
-                                    block=True, timeout=80
-                                )
-                                stim_mask = self._mic.dmd.affine_transform(stim_mask)
-                                stim_ch = rtm_event.stim_channels[0]
-                                slm = SLMImage(
-                                    data=stim_mask,
-                                    device=self._mic.dmd.name,
-                                    exposure=stim_ch.exposure,
-                                )
-                                for ev in stim_events:
-                                    ev = ev.model_copy(update={"slm_image": slm})
-                                    self._put_event(ev)
-                            except Exception as e:
-                                print(f"Warning: Stimulation mask not ready (timeout): {e}")
 
                     # 2. Queue imaging events (never blocks)
                     for ev in img_events:
@@ -741,29 +757,21 @@ class Controller:
     # ------------------------------------------------------------------
 
     def _build_stim_slm(self, rtm_event) -> SLMImage | None:
-        """Build SLMImage for stimulation from fov_state mask queue or stimulator."""
-        stimulator = self._analyzer.pipeline.stimulator
+        """Build SLMImage for stimulation via Analyzer's stim-mask API."""
         fov_index = rtm_event.index.get("p", 0)
-        fov_state = self._analyzer.get_fov_state(fov_index)
         stim_ch = rtm_event.stim_channels[0]
-        stim_exposure = stim_ch.exposure
 
         meta = {**rtm_event.metadata, "fov": fov_index,
                 "timestep": rtm_event.index.get("t", 0)}
 
-        if not isinstance(stimulator, (StimWithImage, StimWithPipeline)):
-            meta["img_shape"] = meta.get("img_shape", (1024, 1024))
-            stim_mask, _ = stimulator.get_stim_mask(metadata=meta)
-            stim_mask = self._mic.dmd.affine_transform(stim_mask)
+        stim_mask = self._analyzer.get_stim_mask(fov_index, meta)
+        if stim_mask is None:
+            print("Warning: Stimulation mask unavailable, sending False to SLM.")
+            stim_mask = False
         else:
-            try:
-                stim_mask = fov_state.stim_mask_queue.get(block=True, timeout=80)
-                stim_mask = self._mic.dmd.affine_transform(stim_mask)
-            except Exception as e:
-                print(f"Warning: Stimulation mask not ready (timeout): {str(e)}")
-                stim_mask = False
+            stim_mask = self._mic.dmd.affine_transform(stim_mask)
 
-        return SLMImage(data=stim_mask, device=self._mic.dmd.name, exposure=stim_exposure)
+        return SLMImage(data=stim_mask, device=self._mic.dmd.name, exposure=stim_ch.exposure)
 
     @staticmethod
     def _make_slm(dmd, exposure, dmd_needs_to_be_waken) -> SLMImage | None:
