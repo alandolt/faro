@@ -285,7 +285,7 @@ class DMD:
             return
         self.affine = affine_model.params
 
-        if True:
+        if verbose:
             # test the calibration on three new points
             event_p = []
             events = []
