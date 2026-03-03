@@ -66,6 +66,7 @@ class ImageProcessingPipeline:
                 folders.extend(feature_extractor_optocheck.extra_folders)
         create_folders(self.storage_path, folders)
         self._analyzer = None  # set by Analyzer.__init__
+        self._queue_timeout: float = 20  # seconds; override in tests
 
     @staticmethod
     def _get_method_params(method) -> set[str]:
@@ -293,9 +294,9 @@ class ImageProcessingPipeline:
 
         # --- Wait for previous frame's tracked DataFrame ---
         if self.stimulator is not None and not isinstance(self.stimulator, StimWithPipeline):
-            timeout_time = 60
+            timeout_time = self._queue_timeout * 3
         else:
-            timeout_time = 20
+            timeout_time = self._queue_timeout
 
         try:
             df_old = fov_obj.tracks_queue.get(block=True, timeout=timeout_time)

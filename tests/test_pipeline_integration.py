@@ -733,3 +733,180 @@ class TestStressSlowSegmentation:
             labels = tifffile.imread(os.path.join(labels_dir, f))
             unique = set(np.unique(labels)) - {0}
             assert len(unique) == 2, f"{f}: expected 2 labels, got {len(unique)}"
+
+
+# ===================================================================
+# Failing component helpers
+# ===================================================================
+
+
+class CrashingSegmentator(OtsuSegmentator):
+    """Segmentator that raises on every call."""
+
+    def segment(self, image: np.ndarray) -> np.ndarray:
+        raise RuntimeError("Segmentation crashed!")
+
+
+class CrashingTracker(TrackerTrackpy):
+    """Tracker that raises on every call."""
+
+    def track_cells(self, df_old, df_new, fov_state):
+        raise RuntimeError("Tracking crashed!")
+
+
+class CrashingStimulator(CenterCircle):
+    """StimWithPipeline that raises on every stim call."""
+
+    def get_stim_mask(self, label_images, metadata=None, img=None, tracks=None):
+        raise RuntimeError("Stimulation crashed!")
+
+
+class CrashingFE(SimpleFE):
+    """Feature extractor that raises on every call."""
+
+    def extract_features(self, labels, image, df_tracked=None, metadata=None):
+        raise RuntimeError("Feature extraction crashed!")
+
+
+# ===================================================================
+# Crash-test helpers
+# ===================================================================
+
+N_CRASH_FRAMES = 3
+CRASH_QUEUE_TIMEOUT = 1  # seconds (instead of default 20)
+
+
+def _make_crashing_pipeline(path, *, segmentator=None, tracker=None, fe=None, stim=None):
+    """Build a pipeline with short queue timeout for crash tests."""
+    pipeline = ImageProcessingPipeline(
+        storage_path=path,
+        segmentators=[SegmentationMethod("labels", segmentator or OtsuSegmentator(), 0, False)],
+        tracker=tracker or TrackerTrackpy(search_range=50, memory=3),
+        feature_extractor=fe or SimpleFE("labels"),
+        stimulator=stim,
+    )
+    pipeline._queue_timeout = CRASH_QUEUE_TIMEOUT
+    return pipeline
+
+
+# ===================================================================
+# Test Class 10: Failing segmentator — raw images must still be saved
+# ===================================================================
+
+
+class TestCrashingSegmentator:
+    """Pipeline crashes during segmentation. Raw images should still be saved."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir):
+        self.path = tmp_dir
+        self.pipeline = _make_crashing_pipeline(
+            self.path, segmentator=CrashingSegmentator(),
+        )
+        self.mic = CircleMicroscope()
+        self.ctrl = Controller(self.mic, self.pipeline)
+        self.events = make_events(N_CRASH_FRAMES)
+        run_and_wait(self.ctrl, self.events)
+
+    def test_all_raw_images_saved(self):
+        """Raw images are saved BEFORE pipeline.run(), so they must all exist."""
+        raw_dir = os.path.join(self.path, "raw")
+        files = [f for f in os.listdir(raw_dir) if f.endswith(".tiff")]
+        assert len(files) == N_CRASH_FRAMES
+
+    def test_no_segmentation_masks(self):
+        """Pipeline crashed during segmentation, so no label masks should exist."""
+        labels_dir = os.path.join(self.path, "labels")
+        files = [f for f in os.listdir(labels_dir) if f.endswith(".tiff")]
+        assert len(files) == 0
+
+
+# ===================================================================
+# Test Class 11: Failing tracker — raw images saved
+# ===================================================================
+
+
+class TestCrashingTracker:
+    """Pipeline crashes during tracking. Raw images should still be saved."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir):
+        self.path = tmp_dir
+        self.pipeline = _make_crashing_pipeline(
+            self.path, tracker=CrashingTracker(search_range=50, memory=3),
+        )
+        self.mic = CircleMicroscope()
+        self.ctrl = Controller(self.mic, self.pipeline)
+        self.events = make_events(N_CRASH_FRAMES)
+        run_and_wait(self.ctrl, self.events)
+
+    def test_all_raw_images_saved(self):
+        raw_dir = os.path.join(self.path, "raw")
+        files = [f for f in os.listdir(raw_dir) if f.endswith(".tiff")]
+        assert len(files) == N_CRASH_FRAMES
+
+    def test_no_segmentation_masks_saved(self):
+        """Crash happens after segmentation but before TIFF save (which is after put()).
+        Since tracking crashes before put(), the TIFF saves never run."""
+        labels_dir = os.path.join(self.path, "labels")
+        files = [f for f in os.listdir(labels_dir) if f.endswith(".tiff")]
+        assert len(files) == 0
+
+
+# ===================================================================
+# Test Class 12: Failing stimulator — raw images saved
+# ===================================================================
+
+
+class TestCrashingStimulator:
+    """Pipeline crashes during stim mask generation. Raw images should still be saved."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir):
+        self.path = tmp_dir
+        # Stim on last frame only so no subsequent frame waits on the broken put()
+        self.n_frames = N_CRASH_FRAMES
+        self.stim_frames = (self.n_frames - 1,)
+        self.pipeline = _make_crashing_pipeline(
+            self.path, stim=CrashingStimulator(),
+        )
+        self.mic = CircleMicroscope()
+        self.ctrl = Controller(self.mic, self.pipeline)
+        self.events = make_events(self.n_frames, stim_frames=self.stim_frames)
+        run_and_wait(self.ctrl, self.events, stim_mode="current")
+
+    def test_all_raw_images_saved(self):
+        raw_dir = os.path.join(self.path, "raw")
+        files = [f for f in os.listdir(raw_dir) if f.endswith(".tiff")]
+        assert len(files) == self.n_frames
+
+
+# ===================================================================
+# Test Class 13: Failing feature extractor — raw images saved
+# ===================================================================
+
+
+class TestCrashingFeatureExtractor:
+    """Pipeline crashes during feature extraction. Raw images should still be saved."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir):
+        self.path = tmp_dir
+        self.pipeline = _make_crashing_pipeline(
+            self.path, fe=CrashingFE("labels"),
+        )
+        self.mic = CircleMicroscope()
+        self.ctrl = Controller(self.mic, self.pipeline)
+        self.events = make_events(N_CRASH_FRAMES)
+        run_and_wait(self.ctrl, self.events)
+
+    def test_all_raw_images_saved(self):
+        raw_dir = os.path.join(self.path, "raw")
+        files = [f for f in os.listdir(raw_dir) if f.endswith(".tiff")]
+        assert len(files) == N_CRASH_FRAMES
+
+    def test_no_segmentation_masks_saved(self):
+        """FE crash happens before put() and TIFF saves, so no masks are written."""
+        labels_dir = os.path.join(self.path, "labels")
+        files = [f for f in os.listdir(labels_dir) if f.endswith(".tiff")]
+        assert len(files) == 0
