@@ -315,6 +315,10 @@ class RTMSequence(MDASequence):
             )
         return self
 
+    def __len__(self) -> int:
+        """Number of RTMEvents (unique (t, p) groups) in this sequence."""
+        return sum(1 for _ in self.iter_events())
+
     def __iter__(self) -> Iterator[RTMEvent]:
         """Yield RTMEvents (overrides MDASequence.__iter__)."""
         return self.iter_events()
@@ -341,6 +345,7 @@ class RTMSequence(MDASequence):
                     "x_pos": mda_ev.x_pos,
                     "y_pos": mda_ev.y_pos,
                     "z_pos": mda_ev.z_pos,
+                    "pos_name": mda_ev.pos_name,
                     "min_start_time": mda_ev.min_start_time,
                 }
             if mda_ev.channel:
@@ -392,6 +397,7 @@ class RTMSequence(MDASequence):
                 x_pos=grp["x_pos"],
                 y_pos=grp["y_pos"],
                 z_pos=grp["z_pos"],
+                pos_name=grp["pos_name"],
                 min_start_time=grp["min_start_time"],
                 metadata=merged_meta,
             )
@@ -439,6 +445,19 @@ class RTMSequence(MDASequence):
         events_a = list(self)
         events_b = list(other)
         return self._offset_events(events_a, events_b)
+
+    def check_fov_batching(
+        self, time_per_fov: float, n_parallel: int | None = None,
+    ) -> bool:
+        """Check whether all FOVs in this sequence can be imaged in parallel.
+
+        Args:
+            time_per_fov: Time (in seconds) to image one FOV.
+            n_parallel: Max FOVs per batch.  If *None*, computed from
+                ``time_per_fov`` and the sequence's timepoint interval.
+        """
+        from rtm_pymmcore.core.utils import check_fov_batching
+        return check_fov_batching(list(self), time_per_fov, n_parallel)
 
     def __radd__(self, other: list[RTMEvent]) -> list[RTMEvent]:
         """Support ``list[RTMEvent] + RTMSequence``."""

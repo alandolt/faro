@@ -4,7 +4,8 @@ import numpy as np
 import os
 from collections import namedtuple, defaultdict
 from skimage.util import map_array
-from rtm_pymmcore.core.data_structures import Channel, PowerChannel, FovState
+from rtm_pymmcore.core.data_structures import Channel, PowerChannel, FovState, RTMEvent, RTMSequence
+import math
 import random
 import pandas as pd
 import dataclasses
@@ -728,3 +729,197 @@ def events_to_dataframe(events: list) -> pd.DataFrame:
             row["stim_exposure"] = stim_channels[0].exposure
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+
+def merge_rtm_sequences(
+    sequences: list[RTMSequence],
+    time_per_fov: float = 0,
+) -> list[RTMEvent]:
+    """Merge multiple RTMSequences into a single event list, batching FOVs in parallel.
+
+    Determines how many FOVs can be imaged within one timepoint interval
+    (``interval // time_per_fov``) and groups them into parallel batches.
+    FOVs within the same batch share timepoints (no time offset).  Overflow
+    FOVs go into the next batch, which starts after the previous batch
+    finishes.
+
+    Example: 31 FOVs, ``time_per_fov=2``, interval=60 s → 30 FOVs fit per
+    batch.  The first 30 run in parallel, FOV 31 runs after they finish.
+
+    Args:
+        sequences: RTMSequence objects to merge. Each may contain one or
+            more FOVs.
+        time_per_fov: Time (in seconds) to image one FOV.  When 0, all FOVs
+            are merged in parallel with no batching.
+
+    Returns:
+        Flat list of RTMEvent with re-indexed FOVs, sequential timepoints
+        per batch, and adjusted times.
+    """
+    if not sequences:
+        return []
+
+    # 1. Collect per-FOV event lists, re-indexing p globally
+    fov_event_lists: list[list[RTMEvent]] = []
+    global_p = 0
+    for seq in sequences:
+        events = list(seq)
+        local_fovs = sorted({e.index.get("p", 0) for e in events})
+        for lp in local_fovs:
+            fov_evs = [e for e in events if e.index.get("p", 0) == lp]
+            fov_event_lists.append([
+                ev.model_copy(update={"index": {**dict(ev.index), "p": global_p}})
+                for ev in fov_evs
+            ])
+            global_p += 1
+
+    total_fovs = len(fov_event_lists)
+
+    # 2. Determine how many FOVs fit in one interval
+    if time_per_fov > 0:
+        first_fov = fov_event_lists[0]
+        unique_times = sorted({e.min_start_time or 0 for e in first_fov})
+        if len(unique_times) >= 2:
+            interval = unique_times[1] - unique_times[0]
+        else:
+            interval = 0
+        n_parallel = max(1, int(interval // time_per_fov)) if interval > 0 else total_fovs
+    else:
+        n_parallel = total_fovs
+
+    # 3. Group FOVs into parallel batches
+    result: list[RTMEvent] = []
+    t_offset = 0
+    time_offset = 0.0
+
+    for batch_start in range(0, total_fovs, n_parallel):
+        batch = fov_event_lists[batch_start:batch_start + n_parallel]
+
+        for fov_evs in batch:
+            for ev in fov_evs:
+                new_t = ev.index.get("t", 0) + t_offset
+                new_time = (ev.min_start_time or 0) + time_offset
+                result.append(ev.model_copy(update={
+                    "index": {**dict(ev.index), "t": new_t},
+                    "min_start_time": new_time,
+                }))
+
+        # Offset for next batch: last timepoint start + time to image batch FOVs
+        batch_max_time = max(e.min_start_time or 0 for fov in batch for e in fov)
+        batch_max_t = max(e.index.get("t", 0) for fov in batch for e in fov)
+        time_offset += batch_max_time + len(batch) * time_per_fov
+        t_offset += batch_max_t + 1
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Parallelisation helpers
+# ---------------------------------------------------------------------------
+
+
+def _infer_interval(events: list[RTMEvent]) -> float:
+    """Infer the timepoint interval from events (time gap between first two unique times)."""
+    unique_times = sorted({e.min_start_time or 0 for e in events})
+    if len(unique_times) >= 2:
+        return unique_times[1] - unique_times[0]
+    return 0
+
+
+def _resolve_n_parallel(
+    events: list[RTMEvent], time_per_fov: float, n_parallel: int | None,
+) -> int:
+    """Return *n_parallel*, computing it from the interval if not given."""
+    if n_parallel is not None:
+        return n_parallel
+    interval = _infer_interval(events)
+    if interval > 0 and time_per_fov > 0:
+        return max(1, int(interval // time_per_fov))
+    return len({e.index.get("p", 0) for e in events})
+
+
+def check_fov_batching(
+    events: list[RTMEvent], time_per_fov: float, n_parallel: int | None = None,
+) -> bool:
+    """Check whether FOVs in an event list can be imaged in parallel.
+
+    Args:
+        events: Flat list of RTMEvent.
+        time_per_fov: Time (in seconds) to image one FOV.
+        n_parallel: Max FOVs per batch.  If *None*, computed from
+            ``time_per_fov`` and the inferred timepoint interval.
+    """
+    n_parallel = _resolve_n_parallel(events, time_per_fov, n_parallel)
+    n_fovs = len({e.index.get("p", 0) for e in events})
+    if n_fovs <= n_parallel:
+        print(
+            f"Parallelisation OK: {n_fovs} FOV(s) fit in "
+            f"{n_parallel} parallel slot(s)."
+        )
+        return True
+    n_batches = math.ceil(n_fovs / n_parallel)
+    print(
+        f"Parallelisation NOT possible in one batch: {n_fovs} FOV(s) "
+        f"need {n_batches} batch(es) of up to {n_parallel}. "
+        f"Use apply_fov_batching() to adjust timing."
+    )
+    return False
+
+
+def apply_fov_batching(
+    events: list[RTMEvent],
+    time_per_fov: float,
+    n_parallel: int | None = None,
+) -> list[RTMEvent]:
+    """Adjust timing so that overflow FOVs run in subsequent batches.
+
+    FOVs 0 .. ``n_parallel-1`` keep their original timing (batch 0).
+    FOVs ``n_parallel`` .. ``2*n_parallel-1`` are offset so they start
+    after batch 0 finishes, and so on.
+
+    Args:
+        events: Flat list of RTMEvent (e.g. from ``list(sequence)`` or
+            ``merge_rtm_sequences``).
+        time_per_fov: Time (in seconds) to image one FOV.
+        n_parallel: Max FOVs per batch.  If *None*, computed from
+            ``time_per_fov`` and the inferred timepoint interval.
+
+    Returns:
+        New list of RTMEvent with adjusted ``min_start_time`` and ``t``
+        indices for overflow batches.
+    """
+    n_parallel = _resolve_n_parallel(events, time_per_fov, n_parallel)
+    fov_ids = sorted({e.index.get("p", 0) for e in events})
+    n_fovs = len(fov_ids)
+
+    if n_fovs <= n_parallel:
+        return list(events)
+
+    # Map each FOV to its batch index
+    fov_to_batch = {fov: i // n_parallel for i, fov in enumerate(fov_ids)}
+
+    # Compute per-batch offsets
+    # Batch 0 events determine the experiment duration
+    batch0_events = [e for e in events if fov_to_batch[e.index.get("p", 0)] == 0]
+    max_t_batch0 = max(e.index.get("t", 0) for e in batch0_events)
+    max_time_batch0 = max(e.min_start_time or 0 for e in batch0_events)
+    batch_duration = max_time_batch0 + n_parallel * time_per_fov
+
+    result: list[RTMEvent] = []
+    for ev in events:
+        fov = ev.index.get("p", 0)
+        batch = fov_to_batch[fov]
+        if batch == 0:
+            result.append(ev)
+        else:
+            t_offset = batch * (max_t_batch0 + 1)
+            time_offset = batch * batch_duration
+            new_t = ev.index.get("t", 0) + t_offset
+            new_time = (ev.min_start_time or 0) + time_offset
+            result.append(ev.model_copy(update={
+                "index": {**dict(ev.index), "t": new_t},
+                "min_start_time": new_time,
+            }))
+
+    return result

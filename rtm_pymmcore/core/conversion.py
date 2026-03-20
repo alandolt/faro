@@ -53,7 +53,7 @@ def df_to_events(df_acquire: pd.DataFrame) -> list[RTMEvent]:
     _SKIP_META = {
         "fov", "timestep", "time",
         "fov_x", "fov_y", "fov_z",
-        "channels",
+        "channels", "stim_channels", "ref_channels",
         "stim", "stim_channel_name", "stim_channel_group",
         "stim_channel_device_name", "stim_channel_power_property_name",
         "stim_power", "stim_exposure",
@@ -70,8 +70,27 @@ def df_to_events(df_acquire: pd.DataFrame) -> list[RTMEvent]:
         channels = tuple(_dict_to_channel(d) for d in channels_raw)
 
         # --- stim channels ---
+        # New format: stim_channels column contains tuple of channel dicts
         stim_channels: tuple[Channel, ...] = ()
-        if row.get("stim", False) and row.get("stim_exposure") and row.get("stim_power"):
+        stim_channels_raw = row.get("stim_channels")
+        if stim_channels_raw and isinstance(stim_channels_raw, (list, tuple)) and len(stim_channels_raw) > 0:
+            if row.get("stim", False):
+                stim_exposure = row.get("stim_exposure")
+                stim_chs = []
+                for d in stim_channels_raw:
+                    ch = _dict_to_channel(d)
+                    # Override exposure with per-frame stim_exposure if available
+                    if stim_exposure and pd.notna(stim_exposure):
+                        ch = type(ch)(
+                            config=ch.config,
+                            exposure=float(stim_exposure),
+                            group=ch.group,
+                            **({"power": ch.power} if isinstance(ch, PowerChannel) else {}),
+                        )
+                    stim_chs.append(ch)
+                stim_channels = tuple(stim_chs)
+        # Fallback: old flat-column format
+        elif row.get("stim", False) and row.get("stim_exposure") and row.get("stim_power"):
             stim_ch_name = row.get("stim_channel_name", "")
             stim_ch_group = row.get("stim_channel_group")
             stim_power = row.get("stim_power")
@@ -81,9 +100,15 @@ def df_to_events(df_acquire: pd.DataFrame) -> list[RTMEvent]:
                     config=stim_ch_name,
                     exposure=stim_exposure,
                     group=stim_ch_group,
-                    power=int(stim_power),
+                    power=int(stim_power) if pd.notna(stim_power) else None,
                 ),
             )
+
+        # --- ref channels ---
+        ref_channels: tuple[Channel, ...] = ()
+        ref_channels_raw = row.get("ref_channels")
+        if ref_channels_raw and isinstance(ref_channels_raw, (list, tuple)) and len(ref_channels_raw) > 0:
+            ref_channels = tuple(_dict_to_channel(d) for d in ref_channels_raw)
 
         # --- metadata: everything not consumed above ---
         metadata = {
@@ -95,6 +120,7 @@ def df_to_events(df_acquire: pd.DataFrame) -> list[RTMEvent]:
             index={"t": timestep, "p": fov},
             channels=channels,
             stim_channels=stim_channels,
+            ref_channels=ref_channels,
             x_pos=row.get("fov_x"),
             y_pos=row.get("fov_y"),
             z_pos=row.get("fov_z"),
