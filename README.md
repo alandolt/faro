@@ -227,6 +227,137 @@ ctrl.extend_experiment(extra_events)                   # non-blocking, appends t
 | `extend_experiment()` | Mid-run additions — pushes events into the running loop |
 | `finish_experiment()` | Cleanup — shuts down Analyzer, resets state |
 
+## Storage
+
+The pipeline writes acquired images, segmentation masks, and stimulation masks to disk. Three writer backends are available:
+
+| Writer | Format | Best for |
+|--------|--------|----------|
+| `TiffWriter` | Individual TIFF files | Quick inspection, legacy compatibility |
+| `OmeZarrWriter` | OME-Zarr v0.5 | Streaming acquisition, cloud-friendly, single multi-dimensional array |
+| `OmeZarrWriterPlate` | OME-Zarr v0.5 (plate layout) | Multi-position experiments viewed as a spatial mosaic |
+
+### OmeZarrWriter (default)
+
+
+Streams all data into a single OME-Zarr v0.5 store. Raw images are stored as a single multi-dimensional array (t, c, y, x) for single-position experiments or (t, p, c, y, x) for multi-position experiments. Segmentation labels are stored as NGFF label groups.
+
+```
+experiment/
+├── acquisition.ome.zarr/
+│   ├── 0/                  raw data array
+│   └── labels/
+│       ├── labels/         segmentation masks
+│       └── stim_mask/      stimulation masks
+└── tracks/                 parquet files
+```
+
+```python
+from rtm_pymmcore.core.writers import OmeZarrWriter
+
+writer = OmeZarrWriter(
+    storage_path="/path/to/experiment",
+    dtype="uint16",
+    store_stim_images=False,       # True: include stim channels in raw array
+    n_timepoints=None,             # None = unbounded (resizable)
+    raw_chunk_t=1,                 # temporal chunk size for raw data
+    label_shard_t=50,              # temporal shard size for labels
+)
+
+pipeline = ImageProcessingPipeline(
+    storage_path="/path/to/experiment",
+    writer=writer,
+    ...
+)
+```
+
+The stream is initialized automatically by the Controller before the first frame is written — no manual setup required.
+
+### OmeZarrWriterPlate (plate layout)
+
+Stores each FOV position as a separate well in an OME-Zarr plate. When opened in napari with `napari-ome-zarr`, positions are tiled spatially as a mosaic rather than stacked along a position slider. This makes it easy to get an overview of all positions at once.
+
+```
+experiment/
+├── acquisition.ome.zarr/
+│   ├── A/
+│   │   ├── 1/             well for position 0
+│   │   │   └── 0/         image group (t, c, y, x)
+│   │   ├── 2/             well for position 1
+│   │   └── ...
+└── tracks/
+```
+
+```python
+from rtm_pymmcore.core.writers import OmeZarrWriterPlate
+
+writer = OmeZarrWriterPlate(
+    storage_path="/path/to/experiment",
+    dtype="uint16",
+)
+
+pipeline = ImageProcessingPipeline(
+    storage_path="/path/to/experiment",
+    writer=writer,
+    ...
+)
+```
+
+### TiffWriter
+Saves each frame as a separate compressed TIFF file:
+
+```
+experiment/
+├── raw/          000_000.tiff, 000_001.tiff, ...
+├── labels/       000_000.tiff, ...
+├── stim_mask/    ...
+└── tracks/       000_latest.parquet, ...
+```
+
+```python
+from rtm_pymmcore.core.writers import TiffWriter
+
+pipeline = ImageProcessingPipeline(
+    storage_path="/path/to/experiment",
+    writer=TiffWriter("/path/to/experiment"),
+    ...
+)
+```
+
+
+### Viewing OME-Zarr Data
+
+OME-Zarr files can be viewed with [napari](https://napari.org) using the [napari-ome-zarr](https://github.com/ome/napari-ome-zarr) plugin. The easiest way to install napari as a standalone tool is with `uv tool`:
+
+```bash
+uv tool install napari[pyqt6] --with napari-ome-zarr
+```
+
+This makes `napari` available as a global command. Open an OME-Zarr dataset directly from the terminal:
+
+```bash
+napari /path/to/experiment/acquisition.ome.zarr
+```
+
+You can also create a desktop shortcut pointing to the `napari` executable for quick access. To find its location:
+
+```bash
+uv tool dir
+```
+
+### Converting TIFF to OME-Zarr
+
+Existing TIFF-based experiments can be migrated to OME-Zarr using the conversion utility:
+
+```python
+from rtm_pymmcore.core.conversion import convert_tiff_to_omezarr
+
+convert_tiff_to_omezarr(
+    src_path="/path/to/tiff_experiment",
+    dst_path="/path/to/omezarr_experiment",
+)
+```
+
 ## Microscope
 
 The microscope provides the hardware interface. Any microscope that implements the useq-schema MDA protocol can be used, the Controller never depends on pymmcore-plus directly.

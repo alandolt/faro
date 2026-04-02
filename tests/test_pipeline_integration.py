@@ -62,8 +62,12 @@ def make_circle_image() -> np.ndarray:
     img = np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.uint16)
     y, x = np.ogrid[:IMG_SIZE, :IMG_SIZE]
 
-    mask1 = (y - CIRCLE1_CENTER[0]) ** 2 + (x - CIRCLE1_CENTER[1]) ** 2 <= CIRCLE1_RADIUS**2
-    mask2 = (y - CIRCLE2_CENTER[0]) ** 2 + (x - CIRCLE2_CENTER[1]) ** 2 <= CIRCLE2_RADIUS**2
+    mask1 = (y - CIRCLE1_CENTER[0]) ** 2 + (
+        x - CIRCLE1_CENTER[1]
+    ) ** 2 <= CIRCLE1_RADIUS**2
+    mask2 = (y - CIRCLE2_CENTER[0]) ** 2 + (
+        x - CIRCLE2_CENTER[1]
+    ) ** 2 <= CIRCLE2_RADIUS**2
 
     img[mask1] = 50000
     img[mask2] = 50000
@@ -201,9 +205,13 @@ class TestPipelineComponents:
         props = regionprops(labels)
         areas = sorted([p.area for p in props])
         # Smaller circle: r=15, expected ~707
-        assert abs(areas[0] - EXPECTED_AREA_2) < 10, f"Small circle area {areas[0]} not ~{EXPECTED_AREA_2}"
+        assert (
+            abs(areas[0] - EXPECTED_AREA_2) < 10
+        ), f"Small circle area {areas[0]} not ~{EXPECTED_AREA_2}"
         # Larger circle: r=20, expected ~1257
-        assert abs(areas[1] - EXPECTED_AREA_1) < 10, f"Large circle area {areas[1]} not ~{EXPECTED_AREA_1}"
+        assert (
+            abs(areas[1] - EXPECTED_AREA_1) < 10
+        ), f"Large circle area {areas[1]} not ~{EXPECTED_AREA_1}"
 
     def test_simple_fe_extracts_area(self):
         img = make_circle_image()
@@ -272,12 +280,16 @@ class TestEndToEndNoStim:
     def test_raw_images_saved(self):
         raw_dir = os.path.join(self.path, "raw")
         files = [f for f in os.listdir(raw_dir) if f.endswith(".tiff")]
-        assert len(files) == N_TIMEPOINTS, f"Expected {N_TIMEPOINTS} raw TIFFs, got {len(files)}"
+        assert (
+            len(files) == N_TIMEPOINTS
+        ), f"Expected {N_TIMEPOINTS} raw TIFFs, got {len(files)}"
 
     def test_segmentation_masks_two_labels(self):
         labels_dir = os.path.join(self.path, "labels")
         files = sorted([f for f in os.listdir(labels_dir) if f.endswith(".tiff")])
-        assert len(files) == N_TIMEPOINTS, f"Expected {N_TIMEPOINTS} label TIFFs, got {len(files)}"
+        assert (
+            len(files) == N_TIMEPOINTS
+        ), f"Expected {N_TIMEPOINTS} label TIFFs, got {len(files)}"
         for f in files:
             labels = tifffile.imread(os.path.join(labels_dir, f))
             unique = set(np.unique(labels)) - {0}
@@ -299,9 +311,9 @@ class TestEndToEndNoStim:
         assert len(particles) == 2, f"Expected 2 particles, got {len(particles)}"
         for pid in particles:
             rows = df[df["particle"] == pid]
-            assert len(rows) == N_TIMEPOINTS, (
-                f"Particle {pid} tracked {len(rows)} times, expected {N_TIMEPOINTS}"
-            )
+            assert (
+                len(rows) == N_TIMEPOINTS
+            ), f"Particle {pid} tracked {len(rows)} times, expected {N_TIMEPOINTS}"
 
     def test_area_values_correct(self):
         tracks_dir = os.path.join(self.path, "tracks")
@@ -311,8 +323,12 @@ class TestEndToEndNoStim:
         # Get mean area per particle
         mean_areas = df.groupby("particle")["area"].mean().sort_values()
         areas = mean_areas.values
-        assert abs(areas[0] - EXPECTED_AREA_2) < 10, f"Small circle area {areas[0]} not ~{EXPECTED_AREA_2}"
-        assert abs(areas[1] - EXPECTED_AREA_1) < 10, f"Large circle area {areas[1]} not ~{EXPECTED_AREA_1}"
+        assert (
+            abs(areas[0] - EXPECTED_AREA_2) < 10
+        ), f"Small circle area {areas[0]} not ~{EXPECTED_AREA_2}"
+        assert (
+            abs(areas[1] - EXPECTED_AREA_1) < 10
+        ), f"Large circle area {areas[1]} not ~{EXPECTED_AREA_1}"
 
     def test_centroid_positions_correct(self):
         tracks_dir = os.path.join(self.path, "tracks")
@@ -350,7 +366,9 @@ class TestEndToEndStimCurrent:
     def test_stim_masks_saved(self):
         stim_dir = os.path.join(self.path, "stim_mask")
         files = [f for f in os.listdir(stim_dir) if f.endswith(".tiff")]
-        assert len(files) == N_TIMEPOINTS, f"Expected {N_TIMEPOINTS} stim mask TIFFs, got {len(files)}"
+        assert (
+            len(files) == N_TIMEPOINTS
+        ), f"Expected {N_TIMEPOINTS} stim mask TIFFs, got {len(files)}"
 
     def test_stim_masks_nonzero_for_stim_frames(self):
         stim_dir = os.path.join(self.path, "stim_mask")
@@ -395,7 +413,9 @@ class TestEndToEndStimPrevious:
         stim_dir = os.path.join(self.path, "stim_mask")
         assert os.path.isdir(stim_dir)
         files = [f for f in os.listdir(stim_dir) if f.endswith(".tiff")]
-        assert len(files) == N_TIMEPOINTS, f"Expected {N_TIMEPOINTS} stim mask files, got {len(files)}"
+        assert (
+            len(files) == N_TIMEPOINTS
+        ), f"Expected {N_TIMEPOINTS} stim mask files, got {len(files)}"
 
     def test_segmentation_works(self):
         labels_dir = os.path.join(self.path, "labels")
@@ -479,9 +499,13 @@ class TestStimMetadataOnlyCurrent:
         for i, f in enumerate(files):
             mask = tifffile.imread(os.path.join(stim_dir, f))
             if i in self.STIM_FRAMES:
-                assert mask.max() > 0, f"Frame {i}: metadata-only stim should produce nonzero mask"
+                assert (
+                    mask.max() > 0
+                ), f"Frame {i}: metadata-only stim should produce nonzero mask"
             else:
-                assert mask.max() == 0, f"Frame {i}: non-stim frame should have zero mask"
+                assert (
+                    mask.max() == 0
+                ), f"Frame {i}: non-stim frame should have zero mask"
 
     def test_segmentation_still_runs(self):
         labels_dir = os.path.join(self.path, "labels")
@@ -561,9 +585,13 @@ class TestStimWithImageCurrent:
         for i, f in enumerate(files):
             mask = tifffile.imread(os.path.join(stim_dir, f))
             if i in self.STIM_FRAMES:
-                assert mask.max() > 0, f"Frame {i}: image-based stim should produce nonzero mask"
+                assert (
+                    mask.max() > 0
+                ), f"Frame {i}: image-based stim should produce nonzero mask"
             else:
-                assert mask.max() == 0, f"Frame {i}: non-stim frame should have zero mask"
+                assert (
+                    mask.max() == 0
+                ), f"Frame {i}: non-stim frame should have zero mask"
 
     def test_segmentation_still_runs(self):
         labels_dir = os.path.join(self.path, "labels")
@@ -629,8 +657,12 @@ class SlowSegmentator(OtsuSegmentator):
         return super().segment(image)
 
 
-def run_and_wait_long(ctrl: Controller, events: list[RTMEvent], stim_mode: str = "current",
-                      timeout: float = 120):
+def run_and_wait_long(
+    ctrl: Controller,
+    events: list[RTMEvent],
+    stim_mode: str = "current",
+    timeout: float = 120,
+):
     """Like run_and_wait but with a longer timeout for slow pipelines."""
     ctrl.run_experiment(events, stim_mode=stim_mode, validate=False)
 
@@ -672,7 +704,11 @@ class TestStressSlowSegmentation:
         self.path = tmp_dir
         self.pipeline = ImageProcessingPipeline(
             storage_path=self.path,
-            segmentators=[SegmentationMethod("labels", SlowSegmentator(STRESS_SEG_DELAY), 0, False)],
+            segmentators=[
+                SegmentationMethod(
+                    "labels", SlowSegmentator(STRESS_SEG_DELAY), 0, False
+                )
+            ],
             tracker=TrackerTrackpy(search_range=50, memory=3),
             feature_extractor=SimpleFE("labels"),
             stimulator=CenterCircle(),
@@ -680,29 +716,33 @@ class TestStressSlowSegmentation:
         self.mic = CircleMicroscope()
         self.ctrl = Controller(self.mic, self.pipeline)
         self.events = make_events(N_STRESS_FRAMES, stim_frames=self.STIM_FRAMES)
-        run_and_wait_long(self.ctrl, self.events, stim_mode="current",
-                          timeout=N_STRESS_FRAMES * STRESS_SEG_DELAY + 60)
+        run_and_wait_long(
+            self.ctrl,
+            self.events,
+            stim_mode="current",
+            timeout=N_STRESS_FRAMES * STRESS_SEG_DELAY + 60,
+        )
 
     def test_all_raw_images_stored(self):
         raw_dir = os.path.join(self.path, "raw")
         files = [f for f in os.listdir(raw_dir) if f.endswith(".tiff")]
-        assert len(files) == N_STRESS_FRAMES, (
-            f"Expected {N_STRESS_FRAMES} raw TIFFs, got {len(files)}"
-        )
+        assert (
+            len(files) == N_STRESS_FRAMES
+        ), f"Expected {N_STRESS_FRAMES} raw TIFFs, got {len(files)}"
 
     def test_all_segmentation_masks_produced(self):
         labels_dir = os.path.join(self.path, "labels")
         files = [f for f in os.listdir(labels_dir) if f.endswith(".tiff")]
-        assert len(files) == N_STRESS_FRAMES, (
-            f"Expected {N_STRESS_FRAMES} label masks, got {len(files)}"
-        )
+        assert (
+            len(files) == N_STRESS_FRAMES
+        ), f"Expected {N_STRESS_FRAMES} label masks, got {len(files)}"
 
     def test_all_stim_masks_produced(self):
         stim_dir = os.path.join(self.path, "stim_mask")
         files = [f for f in os.listdir(stim_dir) if f.endswith(".tiff")]
-        assert len(files) == N_STRESS_FRAMES, (
-            f"Expected {N_STRESS_FRAMES} stim masks, got {len(files)}"
-        )
+        assert (
+            len(files) == N_STRESS_FRAMES
+        ), f"Expected {N_STRESS_FRAMES} stim masks, got {len(files)}"
 
     def test_stim_masks_nonzero_on_stim_frames(self):
         stim_dir = os.path.join(self.path, "stim_mask")
@@ -721,9 +761,9 @@ class TestStressSlowSegmentation:
         assert len(particles) == 2, f"Expected 2 particles, got {len(particles)}"
         for pid in particles:
             rows = df[df["particle"] == pid]
-            assert len(rows) == N_STRESS_FRAMES, (
-                f"Particle {pid}: expected {N_STRESS_FRAMES} rows, got {len(rows)}"
-            )
+            assert (
+                len(rows) == N_STRESS_FRAMES
+            ), f"Particle {pid}: expected {N_STRESS_FRAMES} rows, got {len(rows)}"
 
     def test_segmentation_quality_maintained(self):
         """Even under load, every frame should segment into exactly 2 labels."""
@@ -776,11 +816,15 @@ N_CRASH_FRAMES = 3
 CRASH_QUEUE_TIMEOUT = 1  # seconds (instead of default 20)
 
 
-def _make_crashing_pipeline(path, *, segmentator=None, tracker=None, fe=None, stim=None):
+def _make_crashing_pipeline(
+    path, *, segmentator=None, tracker=None, fe=None, stim=None
+):
     """Build a pipeline with short queue timeout for crash tests."""
     pipeline = ImageProcessingPipeline(
         storage_path=path,
-        segmentators=[SegmentationMethod("labels", segmentator or OtsuSegmentator(), 0, False)],
+        segmentators=[
+            SegmentationMethod("labels", segmentator or OtsuSegmentator(), 0, False)
+        ],
         tracker=tracker or TrackerTrackpy(search_range=50, memory=3),
         feature_extractor=fe or SimpleFE("labels"),
         stimulator=stim,
@@ -801,7 +845,8 @@ class TestCrashingSegmentator:
     def setup(self, tmp_dir):
         self.path = tmp_dir
         self.pipeline = _make_crashing_pipeline(
-            self.path, segmentator=CrashingSegmentator(),
+            self.path,
+            segmentator=CrashingSegmentator(),
         )
         self.mic = CircleMicroscope()
         self.ctrl = Controller(self.mic, self.pipeline)
@@ -817,6 +862,8 @@ class TestCrashingSegmentator:
     def test_no_segmentation_masks(self):
         """Pipeline crashed during segmentation, so no label masks should exist."""
         labels_dir = os.path.join(self.path, "labels")
+        if not os.path.isdir(labels_dir):
+            return  # directory never created ⇒ no masks saved
         files = [f for f in os.listdir(labels_dir) if f.endswith(".tiff")]
         assert len(files) == 0
 
@@ -833,7 +880,8 @@ class TestCrashingTracker:
     def setup(self, tmp_dir):
         self.path = tmp_dir
         self.pipeline = _make_crashing_pipeline(
-            self.path, tracker=CrashingTracker(search_range=50, memory=3),
+            self.path,
+            tracker=CrashingTracker(search_range=50, memory=3),
         )
         self.mic = CircleMicroscope()
         self.ctrl = Controller(self.mic, self.pipeline)
@@ -849,6 +897,8 @@ class TestCrashingTracker:
         """Crash happens after segmentation but before TIFF save (which is after put()).
         Since tracking crashes before put(), the TIFF saves never run."""
         labels_dir = os.path.join(self.path, "labels")
+        if not os.path.isdir(labels_dir):
+            return  # directory never created ⇒ no masks saved
         files = [f for f in os.listdir(labels_dir) if f.endswith(".tiff")]
         assert len(files) == 0
 
@@ -868,7 +918,8 @@ class TestCrashingStimulator:
         self.n_frames = N_CRASH_FRAMES
         self.stim_frames = (self.n_frames - 1,)
         self.pipeline = _make_crashing_pipeline(
-            self.path, stim=CrashingStimulator(),
+            self.path,
+            stim=CrashingStimulator(),
         )
         self.mic = CircleMicroscope()
         self.ctrl = Controller(self.mic, self.pipeline)
@@ -893,7 +944,8 @@ class TestCrashingFeatureExtractor:
     def setup(self, tmp_dir):
         self.path = tmp_dir
         self.pipeline = _make_crashing_pipeline(
-            self.path, fe=CrashingFE("labels"),
+            self.path,
+            fe=CrashingFE("labels"),
         )
         self.mic = CircleMicroscope()
         self.ctrl = Controller(self.mic, self.pipeline)
@@ -908,6 +960,8 @@ class TestCrashingFeatureExtractor:
     def test_no_segmentation_masks_saved(self):
         """FE crash happens before put() and TIFF saves, so no masks are written."""
         labels_dir = os.path.join(self.path, "labels")
+        if not os.path.isdir(labels_dir):
+            return  # directory never created ⇒ no masks saved
         files = [f for f in os.listdir(labels_dir) if f.endswith(".tiff")]
         assert len(files) == 0
 
@@ -965,9 +1019,9 @@ class TestContinueExperiment:
     def test_correct_number_of_raw_images(self):
         raw_dir = os.path.join(self.path, "raw")
         files = [f for f in os.listdir(raw_dir) if f.endswith(".tiff")]
-        assert len(files) == N_TOTAL_FRAMES, (
-            f"Expected {N_TOTAL_FRAMES} raw TIFFs, got {len(files)}"
-        )
+        assert (
+            len(files) == N_TOTAL_FRAMES
+        ), f"Expected {N_TOTAL_FRAMES} raw TIFFs, got {len(files)}"
 
     def test_continuous_filenames(self):
         """Filenames should be 000_00000 through 000_00005."""
@@ -991,9 +1045,9 @@ class TestContinueExperiment:
         assert len(particles) == 2, f"Expected 2 particles, got {len(particles)}"
         for pid in particles:
             rows = df[df["particle"] == pid]
-            assert len(rows) == N_TOTAL_FRAMES, (
-                f"Particle {pid} tracked {len(rows)} times, expected {N_TOTAL_FRAMES}"
-            )
+            assert (
+                len(rows) == N_TOTAL_FRAMES
+            ), f"Particle {pid} tracked {len(rows)} times, expected {N_TOTAL_FRAMES}"
 
     def test_t_offset_after_finish(self):
         """After finish_experiment(), offsets should be reset."""
@@ -1038,9 +1092,9 @@ class TestExtendExperiment:
     def test_correct_number_of_raw_images(self):
         raw_dir = os.path.join(self.path, "raw")
         files = [f for f in os.listdir(raw_dir) if f.endswith(".tiff")]
-        assert len(files) == N_EXTENDED_TOTAL, (
-            f"Expected {N_EXTENDED_TOTAL} raw TIFFs, got {len(files)}"
-        )
+        assert (
+            len(files) == N_EXTENDED_TOTAL
+        ), f"Expected {N_EXTENDED_TOTAL} raw TIFFs, got {len(files)}"
 
     def test_continuous_filenames(self):
         raw_dir = os.path.join(self.path, "raw")
@@ -1057,9 +1111,9 @@ class TestExtendExperiment:
         assert len(particles) == 2
         for pid in particles:
             rows = df[df["particle"] == pid]
-            assert len(rows) == N_EXTENDED_TOTAL, (
-                f"Particle {pid} tracked {len(rows)} times, expected {N_EXTENDED_TOTAL}"
-            )
+            assert (
+                len(rows) == N_EXTENDED_TOTAL
+            ), f"Particle {pid} tracked {len(rows)} times, expected {N_EXTENDED_TOTAL}"
 
 
 # ===================================================================
@@ -1144,6 +1198,7 @@ class _FastSegmentator(OtsuSegmentator):
 
     def segment(self, image: np.ndarray) -> np.ndarray:
         from skimage.measure import label
+
         with self._lock:
             is_first = not self._first_done
             self._first_done = True
@@ -1172,13 +1227,17 @@ class _FastFE:
 
     def extract_positions(self, labels):
         from skimage.measure import regionprops_table
-        table = regionprops_table(labels[self.used_mask], properties=["label", "centroid"])
+
+        table = regionprops_table(
+            labels[self.used_mask], properties=["label", "centroid"]
+        )
         df = pd.DataFrame.from_dict(table)
         df = df.rename({"centroid-0": "x", "centroid-1": "y"}, axis="columns")
         return df
 
     def extract_features(self, labels, image, df_tracked=None, metadata=None):
         from skimage.measure import regionprops_table
+
         table = regionprops_table(labels[self.used_mask], properties=["label", "area"])
         return pd.DataFrame.from_dict(table), None
 
@@ -1202,7 +1261,9 @@ def burst_result():
     stim_frames = tuple(range(10, 20))
     events = make_events(N_BURST_FRAMES, stim_frames=stim_frames)
     run_and_wait_long(
-        ctrl, events, stim_mode="current",
+        ctrl,
+        events,
+        stim_mode="current",
         timeout=FIRST_FRAME_DELAY + N_BURST_FRAMES * 0.1 + 60,
     )
     yield path
@@ -1221,25 +1282,25 @@ class TestBurstNoSignalLoss:
         """Storage path: no images silently dropped."""
         raw_dir = os.path.join(burst_result, "raw")
         files = [f for f in os.listdir(raw_dir) if f.endswith(".tiff")]
-        assert len(files) == N_BURST_FRAMES, (
-            f"Expected {N_BURST_FRAMES} raw TIFFs, got {len(files)}"
-        )
+        assert (
+            len(files) == N_BURST_FRAMES
+        ), f"Expected {N_BURST_FRAMES} raw TIFFs, got {len(files)}"
 
     def test_all_segmentation_masks_produced(self, burst_result):
         """Pipeline path: every frame segmented despite initial block."""
         labels_dir = os.path.join(burst_result, "labels")
         files = [f for f in os.listdir(labels_dir) if f.endswith(".tiff")]
-        assert len(files) == N_BURST_FRAMES, (
-            f"Expected {N_BURST_FRAMES} label masks, got {len(files)}"
-        )
+        assert (
+            len(files) == N_BURST_FRAMES
+        ), f"Expected {N_BURST_FRAMES} label masks, got {len(files)}"
 
     def test_all_stim_masks_produced(self, burst_result):
         """Stim path: every frame produced a stim mask."""
         stim_dir = os.path.join(burst_result, "stim_mask")
         files = [f for f in os.listdir(stim_dir) if f.endswith(".tiff")]
-        assert len(files) == N_BURST_FRAMES, (
-            f"Expected {N_BURST_FRAMES} stim masks, got {len(files)}"
-        )
+        assert (
+            len(files) == N_BURST_FRAMES
+        ), f"Expected {N_BURST_FRAMES} stim masks, got {len(files)}"
 
     def test_tracking_covers_all_frames(self, burst_result):
         """Tracking: both particles tracked across every frame."""
@@ -1251,7 +1312,6 @@ class TestBurstNoSignalLoss:
         assert len(particles) == 2, f"Expected 2 particles, got {len(particles)}"
         for pid in particles:
             rows = df[df["particle"] == pid]
-            assert len(rows) == N_BURST_FRAMES, (
-                f"Particle {pid}: expected {N_BURST_FRAMES} rows, got {len(rows)}"
-            )
-
+            assert (
+                len(rows) == N_BURST_FRAMES
+            ), f"Particle {pid}: expected {N_BURST_FRAMES} rows, got {len(rows)}"

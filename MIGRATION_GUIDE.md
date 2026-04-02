@@ -287,7 +287,148 @@ The old import paths (`base_optocheck`, `optocheck`) still work as backwards-com
 
 ---
 
-## 6. Technical changes (internal)
+## 6. Pluggable storage backends (Writer)
+
+Image storage is no longer hardcoded. The new `Writer` protocol lets you choose how acquired data is persisted. Three implementations are included:
+
+| Writer | Format | Best for |
+|--------|--------|----------|
+| `TiffWriter` | Individual `.tiff` files per frame | Backwards compatibility, simple inspection |
+| `OmeZarrWriter` | Single OME-Zarr v0.5 store (5D array) | Multi-position experiments, large datasets |
+| `OmeZarrWriterPlate` | OME-Zarr plate/well layout | Spatial mosaic viewing in napari |
+
+### Default behaviour (TiffWriter)
+
+If you don't pass a writer, `TiffWriter` is used automatically — existing scripts work unchanged:
+
+```python
+ctrl = Controller(mic, pipeline)          # TiffWriter created internally
+ctrl.run_experiment(events)
+```
+
+Storage layout (same as before):
+
+```
+storage_path/
+├── raw/          001_00042.tiff
+├── labels/       001_00042.tiff
+├── stim_mask/    ...
+└── tracks/       *.parquet
+```
+
+### Using OmeZarrWriter
+
+Pass an `OmeZarrWriter` to the Controller to stream all positions and channels into a single OME-Zarr v0.5 container:
+
+```python
+from rtm_pymmcore.core.writers import OmeZarrWriter
+
+writer = OmeZarrWriter(
+    storage_path=path,
+    dtype="uint16",
+    store_stim_images=True,   # store stim readouts as extra channels (default: False)
+)
+
+ctrl = Controller(mic, pipeline, writer=writer)
+ctrl.run_experiment(events)
+ctrl.finish_experiment()      # calls writer.close()
+```
+
+The Controller calls `writer.init_stream()` automatically before the first frame, deriving positions, channels, and image dimensions from the events and microscope.
+
+**Constructor options:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `storage_path` | *(required)* | Root directory for all outputs |
+| `dtype` | `"uint16"` | Pixel dtype for raw data |
+| `store_stim_images` | `False` | Store stim readouts as additional channels in the zarr array (zeros for non-stim frames). If False, stim images fall back to TIFF. |
+| `n_timepoints` | `None` | Expected number of timepoints (`None` = unbounded) |
+| `label_dtype` | `"uint16"` | Dtype for label/mask arrays |
+| `raw_chunk_t` | `1` | Temporal chunk size for raw data |
+| `raw_shard_t` | `None` | Temporal shard size for raw data (`None` = same as chunk) |
+| `label_chunk_t` | `1` | Temporal chunk size for labels (1 = random access) |
+| `label_shard_t` | `50` | Temporal shard size for labels |
+| `overwrite` | `True` | Overwrite existing zarr store |
+
+Storage layout (bf2raw):
+
+```
+storage_path/
+├── acquisition.ome.zarr/
+│   ├── Pos0/
+│   │   ├── 0/                 raw + stim readout (t, c, y, x)
+│   │   └── labels/
+│   │       ├── labels/        segmentation masks
+│   │       ├── stim_mask/     stimulation masks
+│   │       └── ...
+│   ├── Pos1/ ...
+│   ├── OME/                   series index
+│   └── zarr.json
+├── ref/                       TIFF fallback (different channel count)
+└── tracks/                    *.parquet (unchanged)
+```
+
+### Using OmeZarrWriterPlate
+
+`OmeZarrWriterPlate` inherits all options from `OmeZarrWriter` but arranges each FOV position as a well in a single-row plate. napari-ome-zarr tiles the positions spatially as a mosaic:
+
+```python
+from rtm_pymmcore.core.writers import OmeZarrWriterPlate
+
+writer = OmeZarrWriterPlate(storage_path=path)
+ctrl = Controller(mic, pipeline, writer=writer)
+```
+
+Storage layout (plate):
+
+```
+storage_path/
+├── acquisition.ome.zarr/
+│   ├── zarr.json              plate metadata
+│   ├── A/
+│   │   ├── 1/                 well for Pos0
+│   │   │   ├── zarr.json      well metadata
+│   │   │   └── 0/
+│   │   │       ├── 0/         raw array (t, c, y, x)
+│   │   │       └── labels/
+│   │   │           ├── labels/
+│   │   │           └── stim_mask/
+│   │   ├── 2/                 well for Pos1
+│   │   └── ...
+├── ref/                       TIFF fallback
+└── tracks/                    *.parquet
+```
+
+### Image routing
+
+Both OME-Zarr writers route images by folder name:
+
+| Folder | Destination |
+|--------|-------------|
+| `"raw"` | Primary zarr array (streaming) |
+| `"stim"` | Extra channel(s) in raw array (if `store_stim_images=True`), else TIFF fallback |
+| `"ref"` | Always TIFF fallback (different channel count than raw) |
+| Any other name (`"labels"`, `"stim_mask"`, ...) | NGFF label group, created lazily on first write |
+
+### Implementing a custom writer
+
+Any object that satisfies the `Writer` protocol works:
+
+```python
+from rtm_pymmcore.core.writers import Writer
+
+class MyWriter:
+    storage_path: str
+
+    def write(self, img, metadata, folder): ...
+    def save_events(self, events): ...
+    def close(self): ...
+```
+
+---
+
+## 7. Technical changes (internal)
 
 These changes don't affect experiment scripts but are relevant for contributors:
 
