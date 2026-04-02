@@ -19,12 +19,11 @@ dependencies = [
     "trackpy",
     "napari-micromanager",
     "imaging-server-kit",
+    "ome-writers",
+    "zarr>=3",
 ]
 
 [project.optional-dependencies]
-ome_zarr = [
-    "ome-zarr",
-    ]
 
 stardist = [
     "stardist",
@@ -47,13 +46,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv.sources]
-torch = [
-  { index = "pytorch-cu128", extra = "cellpose" },
-]
 napari-micromanager = { git = "https://github.com/pymmcore-plus/napari-micromanager" }
-
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true

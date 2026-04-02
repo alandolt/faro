@@ -1,5 +1,15 @@
 from rtm_pymmcore.core.pipeline import store_img, ImageProcessingPipeline
 from rtm_pymmcore.core.data_structures import FovState, ImgType
+from rtm_pymmcore.core.writers import (
+    Writer,
+    TiffWriter,
+    OmeZarrWriter,
+    OmeZarrWriterPlate,
+    _extract_positions_from_events,
+    _extract_channel_names_from_events,
+    _extract_n_timepoints_from_events,
+    _extract_n_stim_channels_from_events,
+)
 from rtm_pymmcore.stimulation.base import Stim, StimWithImage, StimWithPipeline
 
 import threading
@@ -34,6 +44,7 @@ class Analyzer:
         max_workers: int = 4,  # Number of parallel processing threads
         max_queue_size: int = 60,
         *,
+        writer: Writer | None = None,
         debug: bool = False,
         debug_every: int = 10,
     ):
@@ -42,10 +53,18 @@ class Analyzer:
             pipeline: ImageProcessingPipeline instance (optional for analysis)
             max_workers: Number of worker threads for pipeline (default: 4)
             max_queue_size: Maximum images in executor queue before deferring (default: 60)
+            writer: Storage backend. Defaults to TiffWriter if pipeline has storage_path.
         """
         self.pipeline = pipeline
+        if writer is not None:
+            self.writer = writer
+        elif pipeline is not None:
+            self.writer = TiffWriter(pipeline.storage_path)
+        else:
+            self.writer = None
         if self.pipeline is not None:
             self.pipeline._analyzer = self
+            self.pipeline._writer = self.writer
         self.fov_states: dict[int, FovState] = {}
         # Pipeline executor with fewer workers - low priority
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
@@ -148,9 +167,7 @@ class Analyzer:
                 if metadata.get("stim", False):
                     if isinstance(self.pipeline.stimulator, StimWithImage):
                         if metadata["img_type"] == ImgType.IMG_RAW:
-                            self._put_stim_mask_if_no_labels(
-                                metadata=metadata, img=img
-                            )
+                            self._put_stim_mask_if_no_labels(metadata=metadata, img=img)
 
                 # PRIORITY 2: Pipeline only if resources available
                 self._try_submit_pipeline(img, event, metadata, folder)
@@ -166,20 +183,24 @@ class Analyzer:
 
     def _do_store(self, img: np.array, metadata: dict, folder: str) -> None:
         """Store image to disk (guaranteed, never skipped)."""
+        if self.writer is None:
+            return
+
         img_type = metadata["img_type"]
 
         if img_type == ImgType.IMG_RAW:
-            store_img(img, metadata, self.pipeline.storage_path, "raw")
+            self.writer.write(img, metadata, "raw")
 
         elif img_type == ImgType.IMG_STIM:
-            store_img(img, metadata, self.pipeline.storage_path, "stim")
+            self.writer.write(img, metadata, "stim")
 
         elif img_type == ImgType.IMG_REF:
-            os.makedirs(os.path.join(self.pipeline.storage_path, "ref"), exist_ok=True)
-            store_img(img, metadata, self.pipeline.storage_path, "ref")
+            self.writer.write(img, metadata, "ref")
 
     def _put_stim_mask_if_no_labels(
-        self, metadata: dict, img: np.ndarray = None,
+        self,
+        metadata: dict,
+        img: np.ndarray = None,
     ) -> None:
         """Generate stimulation mask if stim mask does not use cell labels."""
         if self.pipeline is None or self.pipeline.stimulator is None:
@@ -268,7 +289,10 @@ class Analyzer:
                 # During shutdown, skip capacity check to ensure the queue drains.
                 shutting_down = self._stop_event.is_set()
                 with self.task_lock:
-                    if not shutting_down and self.active_pipeline_tasks >= self.max_queue_size:
+                    if (
+                        not shutting_down
+                        and self.active_pipeline_tasks >= self.max_queue_size
+                    ):
                         # Still overloaded - put back in queue and wait
                         self._deferred_queue.put_nowait((event, metadata, folder))
                         if self.debug:
@@ -376,6 +400,9 @@ class Analyzer:
 
         self.executor.shutdown(wait=wait)
 
+        if self.writer is not None:
+            self.writer.close()
+
     def get_stats(self) -> dict:
         """Get analyzer statistics."""
         with self.task_lock:
@@ -402,18 +429,22 @@ class Controller:
 
     STOP_EVENT = object()
 
-    def __init__(self, mic, pipeline):
+    def __init__(self, mic, pipeline, *, writer: Writer | None = None):
         """
         Args:
             mic: AbstractMicroscope instance (hardware + config).
             pipeline: ImageProcessingPipeline instance.
+            writer: Storage backend. If None, Analyzer uses TiffWriter (default).
+                Pass an OmeZarrWriter for OME-Zarr output.
         """
         self._mic = mic
         self._pipeline = pipeline
+        self._writer = writer
         self._queue: Queue = Queue()
         self._analyzer: Analyzer | None = None
         self._n_channels: int = 1
         self._frame_buffers: dict[tuple, list] = {}
+        self._ref_imaging_cache: dict[tuple, np.ndarray] = {}
 
         # Continuation state
         self._t_offset: int = 0
@@ -475,7 +506,22 @@ class Controller:
         if events:
             self._t_offset = max(e.index.get("t", 0) for e in events) + 1
 
-        self._analyzer = Analyzer(self._pipeline)
+        # Initialize writer stream with values derived from events + microscope
+        if (
+            isinstance(self._writer, OmeZarrWriter)
+            and self._writer._stream is None
+            and self._writer._raw_array is None
+        ):
+            self._writer.init_stream(
+                position_names=_extract_positions_from_events(events),
+                channel_names=_extract_channel_names_from_events(events),
+                image_height=self._mic.mmc.getImageHeight(),
+                image_width=self._mic.mmc.getImageWidth(),
+                n_timepoints=_extract_n_timepoints_from_events(events),
+                n_stim_channels=_extract_n_stim_channels_from_events(events),
+            )
+
+        self._analyzer = Analyzer(self._pipeline, writer=self._writer)
         self._validate_fov_positions(events)
         self._run_mda_with_events(events, stim_mode=stim_mode)
 
@@ -563,6 +609,7 @@ class Controller:
         self._event_queue = None
         self._fov_positions.clear()
         self._frame_buffers.clear()
+        self._ref_imaging_cache.clear()
 
     def stop_run(self):
         self._queue.put(self.STOP_EVENT)
@@ -657,8 +704,16 @@ class Controller:
                     resolve_power=self._mic.resolve_power,
                     stim_slm_image=None,
                 )
-                img_events = [e for e in mda_events if e.metadata.get("img_type") != ImgType.IMG_STIM]
-                stim_events = [e for e in mda_events if e.metadata.get("img_type") == ImgType.IMG_STIM]
+                img_events = [
+                    e
+                    for e in mda_events
+                    if e.metadata.get("img_type") != ImgType.IMG_STIM
+                ]
+                stim_events = [
+                    e
+                    for e in mda_events
+                    if e.metadata.get("img_type") == ImgType.IMG_STIM
+                ]
 
                 if stim_mode == "previous":
                     # --- "previous" mode ---
@@ -666,7 +721,10 @@ class Controller:
 
                     # 1. Stim (mask from previous frame)
                     if has_stim and stim_events and self._mic.dmd:
-                        if not self._analyzer.stimulator_needs_data or fov_index in _stim_pending:
+                        if (
+                            not self._analyzer.stimulator_needs_data
+                            or fov_index in _stim_pending
+                        ):
                             slm = self._build_stim_slm(rtm_event)
                             for ev in stim_events:
                                 ev = ev.model_copy(update={"slm_image": slm})
@@ -718,9 +776,23 @@ class Controller:
             except Exception:
                 pass
 
-        # Stim frames: process immediately (single image, not multi-channel)
+        # Stim frames: process immediately (single image)
         if img_type == ImgType.IMG_STIM:
             self._analyzer.run(img[np.newaxis, ...], event)
+            return
+
+        # Ref frames: stack with cached imaging channels from the same (t, p)
+        if img_type == ImgType.IMG_REF:
+            tp = (event.index.get("t", 0), event.index.get("p", 0))
+            cached_imaging = self._ref_imaging_cache.pop(tp, None)
+            if cached_imaging is not None:
+                ref_frame = np.concatenate(
+                    [cached_imaging, img[np.newaxis, ...]],
+                    axis=0,
+                )
+            else:
+                ref_frame = img[np.newaxis, ...]
+            self._analyzer.run(ref_frame, event)
             return
 
         # Imaging: buffer by (t, p), submit when all channels received
@@ -731,6 +803,8 @@ class Controller:
         if len(buf) >= self._n_channels:
             frame = np.stack(buf, axis=0)
             del self._frame_buffers[tp]
+            # Cache imaging frame for ref channels that arrive later
+            self._ref_imaging_cache[tp] = frame
             self._analyzer.run(frame, event)
 
     # ------------------------------------------------------------------
@@ -742,8 +816,11 @@ class Controller:
         fov_index = rtm_event.index.get("p", 0)
         stim_ch = rtm_event.stim_channels[0]
 
-        meta = {**rtm_event.metadata, "fov": fov_index,
-                "timestep": rtm_event.index.get("t", 0)}
+        meta = {
+            **rtm_event.metadata,
+            "fov": fov_index,
+            "timestep": rtm_event.index.get("t", 0),
+        }
 
         stim_mask = self._analyzer.get_stim_mask(fov_index, meta)
         if stim_mask is None:
@@ -752,7 +829,9 @@ class Controller:
         else:
             stim_mask = self._mic.dmd.affine_transform(stim_mask)
 
-        return SLMImage(data=stim_mask, device=self._mic.dmd.name, exposure=stim_ch.exposure)
+        return SLMImage(
+            data=stim_mask, device=self._mic.dmd.name, exposure=stim_ch.exposure
+        )
 
     @staticmethod
     def _make_slm(dmd, exposure, dmd_needs_to_be_waken) -> SLMImage | None:

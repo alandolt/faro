@@ -4,7 +4,13 @@ import numpy as np
 import os
 from collections import namedtuple, defaultdict
 from skimage.util import map_array
-from rtm_pymmcore.core.data_structures import Channel, PowerChannel, FovState, RTMEvent, RTMSequence
+from rtm_pymmcore.core.data_structures import (
+    Channel,
+    PowerChannel,
+    FovState,
+    RTMEvent,
+    RTMSequence,
+)
 import math
 import random
 import pandas as pd
@@ -79,7 +85,11 @@ def validate_hardware(events, mmc, *, power_properties=None) -> bool:
             hi = mmc.getPropertyUpperLimit(camera, "Exposure")
             checked_exposures: set[tuple[str, int]] = set()
             for event in events:
-                for ch in (*getattr(event, "channels", ()), *getattr(event, "stim_channels", ()), *getattr(event, "ref_channels", ())):
+                for ch in (
+                    *getattr(event, "channels", ()),
+                    *getattr(event, "stim_channels", ()),
+                    *getattr(event, "ref_channels", ()),
+                ):
                     if ch.exposure is None:
                         continue
                     key = (ch.config, ch.exposure)
@@ -105,7 +115,11 @@ def validate_hardware(events, mmc, *, power_properties=None) -> bool:
     _pprops = power_properties or {}
     checked_props: set[tuple] = set()
     for event in events:
-        for ch in (*getattr(event, "channels", ()), *getattr(event, "stim_channels", ()), *getattr(event, "ref_channels", ())):
+        for ch in (
+            *getattr(event, "channels", ()),
+            *getattr(event, "stim_channels", ()),
+            *getattr(event, "ref_channels", ()),
+        ):
             power = getattr(ch, "power", None)
             if power is None:
                 continue
@@ -394,6 +408,7 @@ def _get_mda_from_viewer(viewer):
     data_mda_fovs = data_mda_fovs_dict
     return data_mda_fovs
 
+
 def generate_fov_positions_from_list(mic, data_mda_fovs):
     """Create FovPosition namedtuples from a list of position dicts."""
     fovs = []
@@ -403,42 +418,53 @@ def generate_fov_positions_from_list(mic, data_mda_fovs):
         fovs.append(FovPosition(x=fov.get("x"), y=fov.get("y"), z=z, name=name))
     return fovs
 
+
 # Backwards-compat alias
 generate_fov_objects_from_list = generate_fov_positions_from_list
 
-def generate_fov_positions(mic, viewer=None, filename=None):
+
+def generate_fov_positions(mic, viewer=None, filename=None, fake_fovs=None):
     """Create FovPosition namedtuples from viewer or file."""
-    if filename is not None:
+    if fake_fovs is not None:
+        return [FovPosition(x=0, y=0, z=None, name=str(i)) for i in range(fake_fovs)]
+    elif filename is not None:
         data_mda_fovs = _get_mda_from_file(filename)
     elif viewer is not None:
         data_mda_fovs = _get_mda_from_viewer(viewer)
         if data_mda_fovs is None:
             assert False, "No fovs selected. Please select fovs in the MDA widget"
     else:
-        assert False, "Either viewer must be provided or from_file must be True"
+        assert False, "Either viewer, filename, or fake_fovs must be provided"
 
     return generate_fov_positions_from_list(mic, data_mda_fovs)
+
 
 # Backwards-compat alias
 generate_fov_objects = generate_fov_positions
 
 
-def generate_df_acquire_simple(fovs, n_frames, time_between_timesteps, channels, start_time=0):
+def generate_df_acquire_simple(
+    fovs, n_frames, time_between_timesteps, channels, start_time=0
+):
     dfs = []
     for fov_index, fov in enumerate(fovs):
         for timestep in range(n_frames):
-            dfs.append({
-                "fov": fov_index,
-                "fov_x": fov.x,
-                "fov_y": fov.y,
-                "fov_z": fov.z,
-                "fov_name": fov.name,
-                "timestep": timestep,
-                "time": start_time + timestep * time_between_timesteps,
-                "channels": tuple(dataclasses.asdict(ch) for ch in channels),
-                "fname": f"{str(fov_index).zfill(3)}_{str(timestep).zfill(5)}",
-            })
-    df_acquire = pd.DataFrame(dfs).sort_values(by=["time", "fov"]).reset_index(drop=True)
+            dfs.append(
+                {
+                    "fov": fov_index,
+                    "fov_x": fov.x,
+                    "fov_y": fov.y,
+                    "fov_z": fov.z,
+                    "fov_name": fov.name,
+                    "timestep": timestep,
+                    "time": start_time + timestep * time_between_timesteps,
+                    "channels": tuple(dataclasses.asdict(ch) for ch in channels),
+                    "fname": f"{str(fov_index).zfill(3)}_{str(timestep).zfill(5)}",
+                }
+            )
+    df_acquire = (
+        pd.DataFrame(dfs).sort_values(by=["time", "fov"]).reset_index(drop=True)
+    )
     print(f"Total Experiment Time: {df_acquire['time'].max() / 3600}h")
     return df_acquire
 
@@ -694,6 +720,7 @@ def generate_exp_data_from_tracks(path):
 # RTMEvent-based helpers
 # ---------------------------------------------------------------------------
 
+
 def events_to_dataframe(events: list) -> pd.DataFrame:
     """Convert RTMEvent (or MDAEvent) list to summary DataFrame.
 
@@ -729,7 +756,6 @@ def events_to_dataframe(events: list) -> pd.DataFrame:
             row["stim_exposure"] = stim_channels[0].exposure
         rows.append(row)
     return pd.DataFrame(rows)
-
 
 
 def merge_rtm_sequences(
@@ -768,10 +794,12 @@ def merge_rtm_sequences(
         local_fovs = sorted({e.index.get("p", 0) for e in events})
         for lp in local_fovs:
             fov_evs = [e for e in events if e.index.get("p", 0) == lp]
-            fov_event_lists.append([
-                ev.model_copy(update={"index": {**dict(ev.index), "p": global_p}})
-                for ev in fov_evs
-            ])
+            fov_event_lists.append(
+                [
+                    ev.model_copy(update={"index": {**dict(ev.index), "p": global_p}})
+                    for ev in fov_evs
+                ]
+            )
             global_p += 1
 
     total_fovs = len(fov_event_lists)
@@ -784,7 +812,9 @@ def merge_rtm_sequences(
             interval = unique_times[1] - unique_times[0]
         else:
             interval = 0
-        n_parallel = max(1, int(interval // time_per_fov)) if interval > 0 else total_fovs
+        n_parallel = (
+            max(1, int(interval // time_per_fov)) if interval > 0 else total_fovs
+        )
     else:
         n_parallel = total_fovs
 
@@ -794,16 +824,20 @@ def merge_rtm_sequences(
     time_offset = 0.0
 
     for batch_start in range(0, total_fovs, n_parallel):
-        batch = fov_event_lists[batch_start:batch_start + n_parallel]
+        batch = fov_event_lists[batch_start : batch_start + n_parallel]
 
         for fov_evs in batch:
             for ev in fov_evs:
                 new_t = ev.index.get("t", 0) + t_offset
                 new_time = (ev.min_start_time or 0) + time_offset
-                result.append(ev.model_copy(update={
-                    "index": {**dict(ev.index), "t": new_t},
-                    "min_start_time": new_time,
-                }))
+                result.append(
+                    ev.model_copy(
+                        update={
+                            "index": {**dict(ev.index), "t": new_t},
+                            "min_start_time": new_time,
+                        }
+                    )
+                )
 
         # Offset for next batch: last timepoint start + time to image batch FOVs
         batch_max_time = max(e.min_start_time or 0 for fov in batch for e in fov)
@@ -828,7 +862,9 @@ def _infer_interval(events: list[RTMEvent]) -> float:
 
 
 def _resolve_n_parallel(
-    events: list[RTMEvent], time_per_fov: float, n_parallel: int | None,
+    events: list[RTMEvent],
+    time_per_fov: float,
+    n_parallel: int | None,
 ) -> int:
     """Return *n_parallel*, computing it from the interval if not given."""
     if n_parallel is not None:
@@ -840,7 +876,9 @@ def _resolve_n_parallel(
 
 
 def check_fov_batching(
-    events: list[RTMEvent], time_per_fov: float, n_parallel: int | None = None,
+    events: list[RTMEvent],
+    time_per_fov: float,
+    n_parallel: int | None = None,
 ) -> bool:
     """Check whether FOVs in an event list can be imaged in parallel.
 
@@ -917,9 +955,13 @@ def apply_fov_batching(
             time_offset = batch * batch_duration
             new_t = ev.index.get("t", 0) + t_offset
             new_time = (ev.min_start_time or 0) + time_offset
-            result.append(ev.model_copy(update={
-                "index": {**dict(ev.index), "t": new_t},
-                "min_start_time": new_time,
-            }))
+            result.append(
+                ev.model_copy(
+                    update={
+                        "index": {**dict(ev.index), "t": new_t},
+                        "min_start_time": new_time,
+                    }
+                )
+            )
 
     return result
