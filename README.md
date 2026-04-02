@@ -13,7 +13,7 @@ Pipeline   ◀──▶  Controller   ◀──▶   Microscope
 - track            experiment        - camera
 - extract                            - DMD/SLM
   features                           - live cells
-- stim mask                           
+- stim mask
 ```
 **Microscope**: hardware interface. Any microscope that speaks implements [useq-schema](https://github.com/pymmcore-plus/useq-schema) can be used. Works great with µManger / [pymmcore-plus](https://github.com/pymmcore-plus/pymmcore-plus).
 
@@ -23,7 +23,7 @@ Pipeline   ◀──▶  Controller   ◀──▶   Microscope
 
 ## Quickstart
 
-Try **`experiments/demo_sim_optogenetic/`** notebook to run a complete optogenetic feedback experiment on a simulated microscope, no hardware required.
+Try **`experiments/02_demo_sim_optogenetic/`** notebook to run a complete optogenetic feedback experiment on a simulated microscope, no hardware required.
 
 ```python
 # 1. Set microscope
@@ -309,10 +309,38 @@ For DMD support, set up `self.dmd` in `__init__()`, see `pertzlab/moench.py` for
 
 ## Installation
 
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
+
 ```bash
 git clone https://github.com/pertzlab/rtm-pymmcore.git
 cd rtm-pymmcore
-pip install -r requirements.txt
+uv sync
+```
+
+### Extras
+
+Optional dependency groups are available for segmentation backends and simulation:
+
+| Extra | Packages | Use case |
+|-------|----------|----------|
+| `cellpose` | cellpose, torch | Cellpose segmentation |
+| `stardist` | stardist, tensorflow, csbdeep | StarDist segmentation |
+| `convpaint` | napari-convpaint, scipy | ConvPaint segmentation |
+| `virtual_microscope` | virtual-microscope | Fully simulated microscope with synthetic cell images. For a quick demo, the built-in Micro-Manager demo adapter works without this extra. |
+
+Install one or more extras with `uv sync`:
+
+```bash
+uv sync --extra cellpose
+uv sync --extra cellpose --extra stardist
+uv sync --extra virtual_microscope
+```
+
+Alternatively, with pip (installs the package with all its dependencies):
+
+```bash
+pip install ".[cellpose]"
+pip install ".[cellpose,stardist]"
 ```
 
 ## Contributing
