@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import queue
 import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import enum
 from typing import Any, Iterator
 import numpy as np
 import pandas as pd
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from rtm_pymmcore.segmentation.base import Segmentator
 from dataclasses import dataclass, InitVar
 
@@ -187,6 +187,7 @@ class RTMEvent(MDAEvent):
             "time": self.min_start_time or 0,
             "stim": has_stim,
             "channels": channel_names,
+            "ref_channels": [ch.config for ch in self.ref_channels],
         }
         if has_stim:
             sch = self.stim_channels[0]
@@ -301,6 +302,22 @@ class RTMSequence(MDASequence):
     rtm_metadata: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {**MDASequence.model_config, "arbitrary_types_allowed": True}
+
+    @field_validator("channels", mode="before")
+    @classmethod
+    def _coerce_channels(cls, value: Any) -> Any:
+        """Convert custom Channel/PowerChannel dataclasses to dicts so useq can parse them."""
+        from collections.abc import Sequence as Seq
+
+        if not isinstance(value, Seq) or isinstance(value, str):
+            return value
+        coerced = []
+        for v in value:
+            if isinstance(v, Channel):
+                coerced.append(asdict(v))
+            else:
+                coerced.append(v)
+        return coerced
 
     @model_validator(mode="after")
     def _validate_stim_exposure(self) -> RTMSequence:
