@@ -454,6 +454,7 @@ class Controller:
         self._pending_sentinels: int = 0  # number of None sentinels yet to consume
         self._fov_positions: dict[int, tuple[float, float, float]] = {}
         self._pre_loop_hook: callable | None = None  # testing hook
+        self._all_events: list = []  # accumulated events for JSON persistence
 
     # ------------------------------------------------------------------
     # Public API
@@ -505,6 +506,11 @@ class Controller:
         # Pre-compute offset so extend_experiment can use it during the run
         if events:
             self._t_offset = max(e.index.get("t", 0) for e in events) + 1
+
+        # Persist events to storage as JSON
+        self._all_events = list(events)
+        if self._writer is not None:
+            self._writer.save_events(self._all_events)
 
         # Initialize writer stream with values derived from events + microscope
         if (
@@ -564,6 +570,11 @@ class Controller:
         if offset_events:
             self._t_offset = max(e.index.get("t", 0) for e in offset_events) + 1
 
+        # Append to accumulated events and persist
+        self._all_events.extend(offset_events)
+        if self._writer is not None:
+            self._writer.save_events(self._all_events)
+
         self._validate_fov_positions(offset_events)
         self._run_mda_with_events(offset_events, stim_mode=stim_mode)
 
@@ -607,6 +618,7 @@ class Controller:
         self._time_offset = 0.0
         self._experiment_start = None
         self._event_queue = None
+        self._all_events.clear()
         self._fov_positions.clear()
         self._frame_buffers.clear()
         self._ref_imaging_cache.clear()
@@ -847,8 +859,10 @@ class Controller:
 class ControllerSimulated(Controller):
     """Controller that loads images from disk instead of from the camera."""
 
-    def __init__(self, mic, pipeline, old_data_project_path: str):
-        super().__init__(mic, pipeline)
+    def __init__(
+        self, mic, pipeline, old_data_project_path: str, *, writer: Writer | None = None
+    ):
+        super().__init__(mic, pipeline, writer=writer)
         self._project_path = old_data_project_path
 
     def _on_frame_ready(self, img: np.ndarray, event: MDAEvent) -> None:

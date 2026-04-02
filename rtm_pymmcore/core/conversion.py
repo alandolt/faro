@@ -2,15 +2,19 @@
 
 Includes:
 - ``df_to_events``: convert legacy df_acquire DataFrames to RTMEvent lists.
+- ``events_to_df``: convert RTMEvent lists back to df_acquire DataFrames.
+- ``save_events_json`` / ``load_events_json``: persist events as JSON.
 - ``convert_tiff_to_omezarr``: migrate a TIFF-per-frame experiment directory
   to a single OME-Zarr v0.5 store using :class:`OmeZarrWriter`.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -169,6 +173,108 @@ def df_to_events(df_acquire: pd.DataFrame) -> list[RTMEvent]:
         )
 
     return events
+
+
+# ---------------------------------------------------------------------------
+# RTMEvent ↔ JSON serialization
+# ---------------------------------------------------------------------------
+
+
+def _event_to_dict(event: RTMEvent) -> dict:
+    """Serialize an RTMEvent to a JSON-compatible dict.
+
+    Uses ``dataclasses.asdict`` for Channel/PowerChannel so that subclass
+    fields (e.g. ``power``) are preserved.
+    """
+    return {
+        "index": dict(event.index),
+        "channels": [asdict(ch) for ch in event.channels],
+        "stim_channels": [asdict(ch) for ch in event.stim_channels],
+        "ref_channels": [asdict(ch) for ch in event.ref_channels],
+        "x_pos": event.x_pos,
+        "y_pos": event.y_pos,
+        "z_pos": event.z_pos,
+        "pos_name": event.pos_name,
+        "min_start_time": event.min_start_time,
+        "metadata": event.metadata,
+    }
+
+
+def _dict_to_event(d: dict) -> RTMEvent:
+    """Deserialize a dict (from JSON) back to an RTMEvent."""
+    return RTMEvent(
+        index=d["index"],
+        channels=tuple(_dict_to_channel(ch) for ch in d.get("channels", [])),
+        stim_channels=tuple(_dict_to_channel(ch) for ch in d.get("stim_channels", [])),
+        ref_channels=tuple(_dict_to_channel(ch) for ch in d.get("ref_channels", [])),
+        x_pos=d.get("x_pos"),
+        y_pos=d.get("y_pos"),
+        z_pos=d.get("z_pos"),
+        pos_name=d.get("pos_name"),
+        min_start_time=d.get("min_start_time"),
+        metadata=d.get("metadata", {}),
+    )
+
+
+def save_events_json(path: str, events) -> None:
+    """Save a list of RTMEvents to ``<path>/events.json``."""
+    data = [_event_to_dict(ev) for ev in events]
+    filepath = os.path.join(path, "events.json")
+    os.makedirs(path, exist_ok=True)
+    with open(filepath, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def load_events_json(path: str) -> list[RTMEvent]:
+    """Load a list of RTMEvents from ``<path>/events.json``."""
+    filepath = os.path.join(path, "events.json")
+    with open(filepath) as f:
+        data = json.load(f)
+    return [_dict_to_event(d) for d in data]
+
+
+# ---------------------------------------------------------------------------
+# RTMEvent list → df_acquire DataFrame
+# ---------------------------------------------------------------------------
+
+
+def events_to_df(events: list[RTMEvent]) -> pd.DataFrame:
+    """Convert a list of RTMEvents to a legacy *df_acquire* DataFrame.
+
+    This is the inverse of :func:`df_to_events`.  The resulting DataFrame
+    has the columns expected by :class:`ImageProcessingPipeline_postExperiment`.
+    """
+    rows: list[dict] = []
+    for ev in events:
+        fov = ev.index.get("p", 0)
+        timestep = ev.index.get("t", 0)
+        has_stim = len(ev.stim_channels) > 0
+
+        row: dict = {
+            "fov": fov,
+            "timestep": timestep,
+            "time": ev.min_start_time or 0.0,
+            "fov_x": ev.x_pos,
+            "fov_y": ev.y_pos,
+            "fov_z": ev.z_pos,
+            "fname": f"{fov:03d}_{timestep:05d}",
+            "channels": [asdict(ch) for ch in ev.channels],
+            "stim": has_stim,
+        }
+
+        if ev.stim_channels:
+            row["stim_channels"] = [asdict(ch) for ch in ev.stim_channels]
+        if ev.ref_channels:
+            row["ref_channels"] = [asdict(ch) for ch in ev.ref_channels]
+
+        # Forward event metadata as extra columns
+        for k, v in ev.metadata.items():
+            if k not in row:
+                row[k] = v
+
+        rows.append(row)
+
+    return pd.DataFrame(rows)
 
 
 # ---------------------------------------------------------------------------

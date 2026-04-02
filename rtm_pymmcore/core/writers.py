@@ -49,6 +49,10 @@ class Writer(Protocol):
         """
         ...
 
+    def save_events(self, events) -> None:
+        """Save acquisition events as ``events.json`` in the storage path."""
+        ...
+
     def close(self) -> None:
         """Flush buffers and release resources."""
         ...
@@ -85,6 +89,11 @@ class TiffWriter:
             compression="zlib",
             compressionargs={"level": 5},
         )
+
+    def save_events(self, events) -> None:
+        from rtm_pymmcore.core.conversion import save_events_json
+
+        save_events_json(self.storage_path, events)
 
     def close(self) -> None:
         pass
@@ -230,6 +239,15 @@ class OmeZarrWriter:
         # Label arrays created lazily on first write (one array per label name)
         self._label_arrays: dict[str, object] = {}
         self._label_lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # Event persistence
+    # ------------------------------------------------------------------
+
+    def save_events(self, events) -> None:
+        from rtm_pymmcore.core.conversion import save_events_json
+
+        save_events_json(self.storage_path, events)
 
     # ------------------------------------------------------------------
     # Stream initialization (called by Controller with event-derived positions)
