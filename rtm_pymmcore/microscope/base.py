@@ -1,8 +1,16 @@
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Callable, Iterator
 from threading import Thread
+
+# Silence the FutureWarning from napari-micromanager importing deprecated pymmcore_plus.mda.handlers
+warnings.filterwarnings(
+    "ignore",
+    message="The 'pymmcore_plus.mda.handlers' module is deprecated",
+    category=FutureWarning,
+)
 
 import numpy as np
 from useq import MDAEvent

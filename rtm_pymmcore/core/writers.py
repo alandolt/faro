@@ -182,7 +182,7 @@ class OmeZarrWriter:
         storage_path: str,
         dtype: str = "uint16",
         *,
-        store_stim_images: bool = False,
+        store_stim_images: bool = True,
         n_timepoints: int | None = None,
         label_dtype: str = "uint16",
         raw_chunk_t: int = 1,
