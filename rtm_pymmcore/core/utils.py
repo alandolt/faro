@@ -401,12 +401,12 @@ def _get_mda_from_file(filename):
 
 
 def _get_mda_from_viewer(viewer):
-    data_mda_fovs = viewer.window._dock_widgets["MDA"].widget().value().stage_positions
-    data_mda_fovs_dict = []
-    for data_mda in data_mda_fovs:
-        data_mda_fovs_dict.append(data_mda.model_dump())
-    data_mda_fovs = data_mda_fovs_dict
-    return data_mda_fovs
+    import warnings
+
+    data_mda_fovs = (
+        viewer.window.dock_widgets["MDA"].value().stage_positions
+    )
+    return [pos.model_dump() for pos in data_mda_fovs]
 
 
 def generate_fov_positions_from_list(mic, data_mda_fovs):
@@ -755,7 +755,7 @@ def events_to_dataframe(events: list) -> pd.DataFrame:
             row["stim_power"] = getattr(stim_channels[0], "power", None)
             row["stim_exposure"] = stim_channels[0].exposure
         rows.append(row)
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows).sort_values(by=["timestep", "fov"]).reset_index(drop=True)
 
 
 def merge_rtm_sequences(
@@ -845,6 +845,7 @@ def merge_rtm_sequences(
         time_offset += batch_max_time + len(batch) * time_per_fov
         t_offset += batch_max_t + 1
 
+    result.sort(key=lambda e: (e.min_start_time or 0, e.index.get("p", 0)))
     return result
 
 
@@ -964,4 +965,5 @@ def apply_fov_batching(
                 )
             )
 
+    result.sort(key=lambda e: (e.min_start_time or 0, e.index.get("p", 0)))
     return result

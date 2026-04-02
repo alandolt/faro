@@ -680,6 +680,7 @@ class Controller:
         # extend_experiment) still need to be drained.
         self._event_queue = Queue()
         self._pending_sentinels = 0
+        events = sorted(events, key=lambda e: (e.min_start_time or 0, e.index.get("p", 0)))
         for ev in events:
             self._event_queue.put(ev)
         self._event_queue.put(None)  # sentinel for this initial batch

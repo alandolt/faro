@@ -451,6 +451,7 @@ class RTMSequence(MDASequence):
                     }
                 )
             )
+        result.sort(key=lambda e: (e.min_start_time or 0, e.index.get("p", 0)))
         return result
 
     def __add__(self, other: RTMSequence | list[RTMEvent]) -> list[RTMEvent]:
