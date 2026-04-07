@@ -1,5 +1,7 @@
 log.txt
 
+temp/
+
 .vscode
 .vscode/*
 .claude
@@ -183,5 +185,3 @@ cython_debug/
 
 # MacOS
 .DS_Store
-
-
