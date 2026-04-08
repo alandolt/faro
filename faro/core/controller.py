@@ -841,7 +841,7 @@ class Controller:
         if stim_mask is None:
             print("Warning: Stimulation mask unavailable, sending False to SLM.")
             stim_mask = False
-        else:
+        elif isinstance(stim_mask, np.ndarray):
             stim_mask = self._mic.dmd.affine_transform(stim_mask)
 
         return SLMImage(

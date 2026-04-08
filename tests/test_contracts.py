@@ -271,8 +271,8 @@ class TestStimContract:
     def test_stim_whole_fov(self):
         meta = {"img_shape": (IMG_H, IMG_W)}
         result = StimWholeFOV().get_stim_mask(meta)
-        _assert_valid_stim_mask(result, (IMG_H, IMG_W))
-        assert result[0].sum() > 0, "StimWholeFOV mask should not be empty"
+        assert isinstance(result, tuple) and len(result) == 2
+        assert result[0] is True, "StimWholeFOV should return True (whole FOV on)"
 
     def test_stim_nothing(self):
         meta = {"img_shape": (IMG_H, IMG_W)}
