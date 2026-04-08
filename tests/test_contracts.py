@@ -13,26 +13,26 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rtm_pymmcore.core.data_structures import FovState
-from rtm_pymmcore.feature_extraction.base import FeatureExtractor
-from rtm_pymmcore.feature_extraction.erk_ktr import FE_ErkKtr
-from rtm_pymmcore.feature_extraction.simple import SimpleFE
-from rtm_pymmcore.segmentation.base import (
+from faro.core.data_structures import FovState
+from faro.feature_extraction.base import FeatureExtractor
+from faro.feature_extraction.erk_ktr import FE_ErkKtr
+from faro.feature_extraction.simple import SimpleFE
+from faro.segmentation.base import (
     DummySegmentator,
     OtsuSegmentator,
     Segmentator,
     SegmentatorBinary,
 )
-from rtm_pymmcore.stimulation.base import (
+from faro.stimulation.base import (
     Stim,
     StimNothing,
     StimTopEdgeMeta,
     StimWholeFOV,
     StimWithPipeline,
 )
-from rtm_pymmcore.stimulation.center_circle import CenterCircle
-from rtm_pymmcore.stimulation.moving_line_20x import StimLine
-from rtm_pymmcore.tracking.trackpy import TrackerTrackpy
+from faro.stimulation.center_circle import CenterCircle
+from faro.stimulation.moving_line_20x import StimLine
+from faro.tracking.trackpy import TrackerTrackpy
 
 # ---------------------------------------------------------------------------
 # Synthetic test data
@@ -271,8 +271,8 @@ class TestStimContract:
     def test_stim_whole_fov(self):
         meta = {"img_shape": (IMG_H, IMG_W)}
         result = StimWholeFOV().get_stim_mask(meta)
-        _assert_valid_stim_mask(result, (IMG_H, IMG_W))
-        assert result[0].sum() > 0, "StimWholeFOV mask should not be empty"
+        assert isinstance(result, tuple) and len(result) == 2
+        assert result[0] is True, "StimWholeFOV should return True (whole FOV on)"
 
     def test_stim_nothing(self):
         meta = {"img_shape": (IMG_H, IMG_W)}
