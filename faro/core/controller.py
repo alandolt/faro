@@ -444,7 +444,6 @@ class Controller:
         self._analyzer: Analyzer | None = None
         self._n_channels: int = 1
         self._frame_buffers: dict[tuple, list] = {}
-        self._ref_imaging_cache: dict[tuple, np.ndarray] = {}
 
         # Continuation state
         self._t_offset: int = 0
@@ -621,7 +620,6 @@ class Controller:
         self._all_events.clear()
         self._fov_positions.clear()
         self._frame_buffers.clear()
-        self._ref_imaging_cache.clear()
 
     def stop_run(self):
         self._queue.put(self.STOP_EVENT)
@@ -796,30 +794,21 @@ class Controller:
             self._analyzer.run(img[np.newaxis, ...], event)
             return
 
-        # Ref frames: stack with cached imaging channels from the same (t, p)
-        if img_type == ImgType.IMG_REF:
-            tp = (event.index.get("t", 0), event.index.get("p", 0))
-            cached_imaging = self._ref_imaging_cache.pop(tp, None)
-            if cached_imaging is not None:
-                ref_frame = np.concatenate(
-                    [cached_imaging, img[np.newaxis, ...]],
-                    axis=0,
-                )
-            else:
-                ref_frame = img[np.newaxis, ...]
-            self._analyzer.run(ref_frame, event)
-            return
-
-        # Imaging: buffer by (t, p), submit when all channels received
+        # Imaging + ref: buffer by (t, p), submit when all channels received.
+        # Ref channels (present only on user-defined timepoints) are buffered
+        # alongside imaging channels so the pipeline runs exactly once per
+        # timepoint.  The expected count is derived from event metadata so it
+        # is correct even when ref_channels vary across timepoints.
         tp = (event.index.get("t", 0), event.index.get("p", 0))
         buf = self._frame_buffers.setdefault(tp, [])
         buf.append(img)
 
-        if len(buf) >= self._n_channels:
+        n_expected = len(event.metadata.get("channels", ()))
+        n_expected += len(event.metadata.get("ref_channels", ()))
+
+        if len(buf) >= n_expected:
             frame = np.stack(buf, axis=0)
             del self._frame_buffers[tp]
-            # Cache imaging frame for ref channels that arrive later
-            self._ref_imaging_cache[tp] = frame
             self._analyzer.run(frame, event)
 
     # ------------------------------------------------------------------
@@ -918,7 +907,10 @@ class ControllerSimulated(Controller):
         buf = self._frame_buffers.setdefault(tp, [])
         buf.append(img)
 
-        if len(buf) >= self._n_channels:
+        n_expected = len(meta.get("channels", ()))
+        n_expected += len(meta.get("ref_channels", ()))
+
+        if len(buf) >= n_expected:
             del self._frame_buffers[tp]
             fname = meta["fname"]
             t_idx = event.index.get("t", 0)
