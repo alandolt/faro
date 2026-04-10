@@ -530,6 +530,29 @@ class OmeZarrWriter:
         else:
             self._stim_pending = True
 
+    def _ensure_p_dim(self, arr, p: int, p_axis: int) -> None:
+        """Grow *arr*'s position dimension so index *p* is in bounds.
+
+        Used by the multi-position direct-write path to support experiments
+        where new FOV indices appear after the initial :meth:`init_stream`
+        call — e.g. batch BO driven by :class:`ComposedAgent`, which shifts
+        FOV ids by ``phase_id * n_per_phase`` to keep per-phase tracker
+        state isolated, but the writer was sized only for phase 0's FOVs.
+
+        Also appends placeholder entries to :attr:`_position_names` so the
+        in-memory length stays consistent with the on-disk array.
+        """
+        if p < arr.shape[p_axis]:
+            return
+        with self._label_lock:  # reuse lock for thread safety
+            if p < arr.shape[p_axis]:
+                return
+            new_shape = list(arr.shape)
+            new_shape[p_axis] = p + 1
+            arr.resize(tuple(new_shape))
+            while len(self._position_names) < p + 1:
+                self._position_names.append(f"Pos{len(self._position_names)}")
+
     def _write_raw_direct(self, img: np.ndarray, metadata: dict) -> None:
         """Multi-position: write directly to zarr array at (t, p, c, y, x)."""
         t = metadata.get("timestep", 0)
@@ -543,6 +566,9 @@ class OmeZarrWriter:
                     new_shape = list(arr.shape)
                     new_shape[0] = t + 1
                     arr.resize(tuple(new_shape))
+
+        # Resize position dimension (axis 1) if needed
+        self._ensure_p_dim(arr, p, p_axis=1)
 
         # Write frame(s) — img is (C, H, W) or (H, W)
         if img.ndim == 3:
@@ -562,6 +588,9 @@ class OmeZarrWriter:
         if self._raw_array is not None:
             t = metadata.get("timestep", 0)
             p = metadata.get("fov", 0)
+            # Resize position dimension (axis 1) if a new FOV index appeared
+            # since init_stream — e.g. phased batch BO with fresh FOVs / phase.
+            self._ensure_p_dim(self._raw_array, p, p_axis=1)
             stim_start = self._n_imaging_channels
             if frame.ndim == 2:
                 self._raw_array[t, p, stim_start, :, :] = frame
@@ -617,7 +646,11 @@ class OmeZarrWriter:
                     self._create_label_array(name, frame)
 
         arr = self._label_arrays[name]
-        n_pos = len(self._position_names)
+        # Use the array's actual rank to decide multi-vs-single position,
+        # not len(self._position_names), because the latter can be grown
+        # by _ensure_p_dim at runtime and we want to keep writing through
+        # the same layout the array was created with.
+        has_pos_axis = arr.ndim >= 4
 
         # Resize time dimension (axis 0) if needed
         if t >= arr.shape[0]:
@@ -627,7 +660,10 @@ class OmeZarrWriter:
                     new_shape[0] = t + 1
                     arr.resize(tuple(new_shape))
 
-        if n_pos > 1:
+        if has_pos_axis:
+            # Resize position dimension (axis 1) if a new FOV index appeared
+            # since init_stream — matches the raw array behaviour.
+            self._ensure_p_dim(arr, p, p_axis=1)
             arr[t, p] = frame
         else:
             arr[t] = frame
