@@ -41,27 +41,6 @@ def store_img(img: np.array, metadata, path: str, folder: str, *, writer=None):
     )
 
 
-def _stim_mask_to_array(stim_mask, shape_img) -> np.ndarray:
-    """Normalise a stimulator's ``get_stim_mask`` return value to a 2D ndarray.
-
-    ``StimWholeFOV`` (and potentially other DMD-shortcut stimulators)
-    return the scalar ``True`` / ``False`` / ``None`` to mean "stimulate
-    the entire FOV" / "don't stimulate" without materialising a per-pixel
-    mask.  The controller's DMD path handles that scalar directly, but
-    the storage path needs a real ndarray for ``writer.write`` /
-    ``tifffile.imwrite``.  This helper converts the scalar form into a
-    full-ones / zeros mask of *shape_img*, and passes ndarrays through
-    unchanged.
-    """
-    if isinstance(stim_mask, np.ndarray):
-        return stim_mask
-    if stim_mask is None or stim_mask is False:
-        return np.zeros(shape_img, np.uint8)
-    if stim_mask is True:
-        return np.ones(shape_img, np.uint8)
-    return np.asarray(stim_mask)
-
-
 def build_frame_dataframe(feature_extractor, segmentation_results, metadata):
     """Extract positions from segmentation results and attach metadata columns."""
     if feature_extractor is not None:
@@ -499,10 +478,7 @@ class ImageProcessingPipeline:
         w = self._writer
         if self.stimulator is not None:
             if metadata["stim"]:
-                stim_mask_img = _stim_mask_to_array(stim_mask, shape_img)
-                store_img(
-                    stim_mask_img, metadata, self.storage_path, "stim_mask", writer=w
-                )
+                store_img(stim_mask, metadata, self.storage_path, "stim_mask", writer=w)
             else:
                 store_img(
                     np.zeros(shape_img, np.uint8),

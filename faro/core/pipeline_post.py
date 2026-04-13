@@ -18,7 +18,6 @@ import faro.feature_extraction.base as abstract_fe
 from faro.core.data_structures import FovState, ImgType, SegmentationMethod
 from faro.core.utils import create_folders
 from faro.core.pipeline import (
-    _stim_mask_to_array,
     store_img,
     build_frame_dataframe,
     run_tracking,
@@ -445,7 +444,7 @@ class ImageProcessingPipeline_postExperiment:
                         img=img,
                     )
                     store_img(
-                        _stim_mask_to_array(stim_mask, shape_img),
+                        stim_mask,
                         metadata,
                         self.storage_path,
                         "stim_mask",
