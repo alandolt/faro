@@ -16,7 +16,9 @@ multi-phase experiments where each phase visits a fresh batch of wells.
 
 from __future__ import annotations
 
+import operator as _operator
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -26,6 +28,80 @@ import pandas as pd
 from faro.agents.base import PreExperimentAgent
 from faro.core.data_structures import Channel, RTMSequence
 from faro.core.utils import FovPosition
+
+_FOV_OPERATORS: dict[str, Any] = {
+    "below": _operator.lt,
+    "above": _operator.gt,
+    "below_or_equal": _operator.le,
+    "above_or_equal": _operator.ge,
+    "equal": _operator.eq,
+}
+
+
+@dataclass
+class FOVCondition:
+    """Condition for filtering FOVs based on per-cell features.
+
+    Evaluates whether a sufficient fraction of cells in an FOV satisfy a
+    threshold on a given feature.  This allows feature-aware FOV selection
+    beyond simple cell-count filtering — e.g. selecting only FOVs where
+    the biosensor signal is in a usable range.
+
+    Requires a :class:`~faro.feature_extraction.base.FeatureExtractor`
+    that produces the referenced feature column (e.g.
+    :class:`~faro.feature_extraction.erk_ktr.FE_ErkKtr` for ``"cnr"``).
+
+    Args:
+        feature: Column name in the per-cell feature table produced by
+            ``FeatureExtractor.extract_features()`` (e.g. ``"cnr"``).
+        operator: Comparison — ``"below"``, ``"above"``,
+            ``"below_or_equal"``, ``"above_or_equal"``, ``"equal"``.
+        threshold: Value to compare against.
+        min_fraction: Minimum fraction of cells that must satisfy the
+            condition for the FOV to be accepted.  Default ``1.0``
+            (every cell must satisfy).
+
+    Example::
+
+        # Accept FOVs where at least 80 % of cells have CNR < 0.6
+        FOVCondition("cnr", "below", 0.6, min_fraction=0.8)
+    """
+
+    feature: str
+    operator: str
+    threshold: float
+    min_fraction: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.operator not in _FOV_OPERATORS:
+            raise ValueError(
+                f"Unknown operator {self.operator!r}; "
+                f"choose from {list(_FOV_OPERATORS)}"
+            )
+        if not 0.0 <= self.min_fraction <= 1.0:
+            raise ValueError(f"min_fraction must be in [0, 1], got {self.min_fraction}")
+
+    def check(self, df_cells: pd.DataFrame) -> tuple[bool, float]:
+        """Check whether the condition is met on per-cell data.
+
+        Args:
+            df_cells: DataFrame with one row per cell, as returned by
+                ``FeatureExtractor.extract_features()``.
+
+        Returns:
+            ``(passed, actual_fraction)`` — whether the condition passed
+            and the actual fraction of cells that satisfied it.
+        """
+        if df_cells.empty or self.feature not in df_cells.columns:
+            return False, 0.0
+        series = df_cells[self.feature].dropna()
+        if series.empty:
+            return False, 0.0
+        op_fn = _FOV_OPERATORS[self.operator]
+        n_satisfying = op_fn(series, self.threshold).sum()
+        fraction = float(n_satisfying) / len(series)
+        return fraction >= self.min_fraction, fraction
+
 
 if TYPE_CHECKING:
     from useq import WellPlate, WellPlatePlan
@@ -83,6 +159,96 @@ def _farthest_point_sampling(
         new_dist = np.linalg.norm(points - points[next_idx], axis=1)
         dist = np.minimum(dist, new_dist)
     return selected
+
+
+def _extreme_sampling(
+    values: np.ndarray,
+    k: int,
+    *,
+    points: np.ndarray | None = None,
+) -> list[int]:
+    """Pick ``k`` indices spanning the extremes of ``values``.
+
+    Primary criterion: feature value at evenly-spaced quantile targets
+    along the sorted axis, so ``k=2`` picks the min and max, ``k=3``
+    picks min/median/max, etc.  Secondary criterion: when ``points`` is
+    supplied, feature-value ties and near-ties are broken in favour of
+    candidates **farthest** from already-picked FOVs (max-min spatial
+    distance).  This preserves the "extremes first, spread second"
+    contract so that e.g. two candidates with equal cell counts don't
+    end up clustered in one corner of the well.
+
+    Examples:
+        ``values=[36, 135, 136, 200]``, ``k=2`` -> indices of ``36`` and
+        ``200`` (unique values, no tiebreak needed).
+        ``values=[40, 40, 200, 200]``, ``k=2`` with ``points`` -> the
+        ``40`` and ``200`` candidates that are furthest apart in (x, y).
+
+    Args:
+        values: ``(N,)`` scalar feature values (e.g. cell counts).
+        k: Number of points to select. If ``k >= N`` returns all indices
+            in feature-sorted order.
+        points: Optional ``(N, 2)`` spatial coordinates.  When given,
+            ties on the feature axis are broken by maximising minimum
+            spatial distance to previously-picked FOVs.  When omitted
+            the selector falls back to rank-based picking with stable
+            tiebreaking.
+
+    Returns:
+        List of indices into *values*, ordered by selection (first is
+        the min-feature slot, last is the max-feature slot).
+    """
+    n = len(values)
+    if k <= 0 or n == 0:
+        return []
+    vals = np.asarray(values)
+    order = np.argsort(vals, kind="stable")
+    if k >= n:
+        return [int(i) for i in order]
+    if k == 1:
+        return [int(order[n // 2])]
+
+    target_ranks = np.linspace(0, n - 1, k).round().astype(int)
+
+    if points is None:
+        # Legacy fast path: pick directly at the integer target ranks,
+        # deduping defensively (rounding can collide for small n).
+        seen: set[int] = set()
+        out: list[int] = []
+        for rank in target_ranks:
+            idx = int(order[int(rank)])
+            if idx in seen:
+                continue
+            seen.add(idx)
+            out.append(idx)
+        return out
+
+    pts = np.asarray(points, dtype=float)
+    target_values = vals[order][target_ranks]
+
+    picked: list[int] = []
+    picked_set: set[int] = set()
+    for target_val in target_values:
+        unpicked = [i for i in range(n) if i not in picked_set]
+        if not unpicked:
+            break
+        unpicked_arr = np.asarray(unpicked, dtype=int)
+        feat_dist = np.abs(vals[unpicked_arr] - target_val)
+        if picked:
+            picked_pts = pts[picked]
+            # Max-min distance: each candidate scored by its nearest
+            # already-picked neighbour; we then maximise that score.
+            diffs = pts[unpicked_arr][:, None, :] - picked_pts[None, :, :]
+            spatial_dist = np.linalg.norm(diffs, axis=-1).min(axis=1)
+        else:
+            spatial_dist = np.zeros(len(unpicked_arr))
+        # Lexsort's last key is primary — feature-distance wins, ties
+        # broken by *maximising* spatial distance (negated for argsort).
+        rank = np.lexsort((-spatial_dist, feat_dist))
+        best = int(unpicked_arr[int(rank[0])])
+        picked.append(best)
+        picked_set.add(best)
+    return picked
 
 
 class FOVFinderAgent(PreExperimentAgent):
@@ -150,7 +316,46 @@ class FOVFinderAgent(PreExperimentAgent):
             provided, ``extract_positions({"labels": label_image})`` is
             called per FOV and the resulting DataFrame is attached to the
             ``"all_candidates"`` output for downstream inspection.  This
-            does not affect selection.
+            does not affect selection unless *fov_conditions* is also
+            set — in which case
+            ``extract_features(labels, img_stack)`` is called instead
+            to produce per-cell features (e.g. CNR) that the conditions
+            can filter on.
+        fov_conditions: Optional list of :class:`FOVCondition` objects
+            applied per FOV to filter by per-cell features.  An FOV is
+            accepted only if it passes the cell-count check **and**
+            every condition in the list.  Requires a
+            ``feature_extractor`` that produces the referenced columns.
+            The per-cell feature table produced for each FOV is stored
+            on ``self.last_run["fov_features"]`` for inspection (keyed
+            by candidate index ``p``).  Example::
+
+                fov_conditions=[
+                    FOVCondition("cnr", "below", 0.6, min_fraction=0.8),
+                ]
+        selection_mode: How to pick ``fovs_per_well`` positions from the
+            valid candidates of each well:
+
+            * ``"farthest_point"`` (default) — greedy max-min sampling on
+                (x, y) so the picked FOVs are maximally spread in space.
+                Use this when you want low spatial overlap and don't care
+                which cells you land on.
+            * ``"extremes"`` — sort the valid candidates by
+                ``selection_feature`` and pick ``fovs_per_well`` evenly-
+                spaced positions spanning the min and max.  For
+                ``fovs_per_well=2`` this returns the FOVs with the
+                lowest and highest feature value; for ``=3`` it adds the
+                median.  Useful for picking a contrast pair (e.g. the
+                sparsest and densest FOV inside the valid cell-count
+                window) instead of a spatially spread set.  Ties on the
+                feature axis are broken by **spatial distance** —
+                candidates farther from already-picked FOVs win, so two
+                equally-extreme candidates won't end up clustered.
+        selection_feature: Column name in the per-candidate scan
+            DataFrame used as the axis for ``selection_mode="extremes"``.
+            Defaults to ``"n_cells"``.  Any column produced by the scan
+            works (e.g. ``"fe_cnr_mean"`` when a ``feature_extractor`` is
+            configured).  Ignored in ``"farthest_point"`` mode.
         z: Z handling for the candidate positions.  Three modes:
 
             * ``None`` (default) — the agent does **not** drive focus.
@@ -219,6 +424,9 @@ class FOVFinderAgent(PreExperimentAgent):
         segmentator: Segmentator,
         seg_channel_index: int = 0,
         feature_extractor: FeatureExtractor | None = None,
+        fov_conditions: list[FOVCondition] | None = None,
+        selection_mode: Literal["farthest_point", "extremes"] = "farthest_point",
+        selection_feature: str = "n_cells",
         z: float | None | Literal["current"] = None,
         random_seed: int | None = None,
         name_prefix: str = "fov",
@@ -266,6 +474,16 @@ class FOVFinderAgent(PreExperimentAgent):
             raise ValueError("imaging_channels must contain at least one channel")
         if not (z is None or z == "current" or isinstance(z, (int, float))):
             raise ValueError(f"z must be None, 'current', or a float; got {z!r}")
+        if fov_conditions and feature_extractor is None:
+            raise ValueError(
+                "fov_conditions requires a feature_extractor that produces "
+                "the referenced feature columns (e.g. FE_ErkKtr for 'cnr')."
+            )
+        if selection_mode not in ("farthest_point", "extremes"):
+            raise ValueError(
+                f"selection_mode must be 'farthest_point' or 'extremes'; "
+                f"got {selection_mode!r}"
+            )
 
         self.well_plate_plan_input = well_plate_plan
         self.wells_per_phase = int(wells_per_phase)
@@ -279,6 +497,9 @@ class FOVFinderAgent(PreExperimentAgent):
         self.segmentator = segmentator
         self.seg_channel_index = int(seg_channel_index)
         self.feature_extractor = feature_extractor
+        self.fov_conditions: list[FOVCondition] = list(fov_conditions or [])
+        self.selection_mode = selection_mode
+        self.selection_feature = str(selection_feature)
         self.z = z
         self.random_seed = random_seed
         self.name_prefix = name_prefix
@@ -488,9 +709,17 @@ class FOVFinderAgent(PreExperimentAgent):
         """Run segmentation per FOV and return a DataFrame of cell counts.
 
         Optionally also runs the configured ``feature_extractor`` per FOV.
+        When :attr:`fov_conditions` is set, calls the extractor's
+        ``extract_features`` (instead of ``extract_positions``) to obtain
+        per-cell features (e.g. CNR), evaluates every condition, and marks
+        the FOV invalid if any condition fails.  The per-cell feature
+        DataFrames are stashed on ``self._last_fov_features`` keyed by ``p``.
         """
         n_channels = len(self.imaging_channels)
         rows: list[dict[str, Any]] = []
+        # Reset per-call storage of per-cell feature tables (one per FOV
+        # that actually had extract_features called on it).
+        self._last_fov_features: dict[int, pd.DataFrame] = {}
 
         for p_idx, fp in enumerate(positions):
             channel_imgs = []
@@ -546,23 +775,82 @@ class FOVFinderAgent(PreExperimentAgent):
             }
 
             if self.feature_extractor is not None:
-                try:
-                    df_features = self.feature_extractor.extract_positions(
-                        {"labels": label_img}
-                    )
-                    if df_features is not None and not df_features.empty:
+                # Two paths:
+                #   * fov_conditions set -> call extract_features() so we
+                #     have per-cell features (e.g. CNR) to filter on.
+                #   * no fov_conditions  -> keep the original cheap
+                #     extract_positions() path (label, x, y aggregates).
+                if self.fov_conditions and valid:
+                    used_mask = getattr(self.feature_extractor, "used_mask", "labels")
+                    try:
+                        fe_result = self.feature_extractor.extract_features(
+                            {used_mask: label_img}, img_stack
+                        )
+                    except Exception as e:  # pragma: no cover - user-supplied FE
+                        print(
+                            f"[FOVFinderAgent] extract_features failed at FOV "
+                            f"{p_idx}: {type(e).__name__}: {e}"
+                        )
+                        fe_result = None
+
+                    # extract_features may return (df, extra_masks) or just df.
+                    if isinstance(fe_result, tuple) and fe_result:
+                        df_features = fe_result[0]
+                    else:
+                        df_features = fe_result
+
+                    if df_features is None or df_features.empty:
+                        valid = False
+                        reason = "feature_extraction_empty"
+                    else:
+                        self._last_fov_features[p_idx] = df_features
+                        row["n_cells_features"] = int(len(df_features))
+                        # Summary stats for inspection
                         for col in df_features.columns:
                             if col == "label":
                                 continue
                             try:
                                 row[f"fe_{col}_mean"] = float(df_features[col].mean())
+                                row[f"fe_{col}_median"] = float(
+                                    df_features[col].median()
+                                )
                             except (TypeError, ValueError):
                                 pass
-                except Exception as e:  # pragma: no cover - user-supplied FE
-                    print(
-                        f"[FOVFinderAgent] feature_extractor failed at FOV "
-                        f"{p_idx}: {type(e).__name__}: {e}"
-                    )
+                        # Evaluate every FOV condition; first failure wins.
+                        for cond in self.fov_conditions:
+                            passed, fraction = cond.check(df_features)
+                            row[f"cond_{cond.feature}_{cond.operator}_frac"] = fraction
+                            if not passed:
+                                valid = False
+                                reason = (
+                                    f"condition_failed:{cond.feature}"
+                                    f"_{cond.operator}_{cond.threshold}"
+                                    f"@{cond.min_fraction:.2f}"
+                                )
+                                break
+                    # Update the row's valid/reason (they may have changed).
+                    row["valid"] = valid
+                    row["reason"] = reason
+                else:
+                    try:
+                        df_features = self.feature_extractor.extract_positions(
+                            {"labels": label_img}
+                        )
+                        if df_features is not None and not df_features.empty:
+                            for col in df_features.columns:
+                                if col == "label":
+                                    continue
+                                try:
+                                    row[f"fe_{col}_mean"] = float(
+                                        df_features[col].mean()
+                                    )
+                                except (TypeError, ValueError):
+                                    pass
+                    except Exception as e:  # pragma: no cover - user-supplied FE
+                        print(
+                            f"[FOVFinderAgent] feature_extractor failed at FOV "
+                            f"{p_idx}: {type(e).__name__}: {e}"
+                        )
 
             rows.append(row)
 
@@ -656,15 +944,30 @@ class FOVFinderAgent(PreExperimentAgent):
                 continue
 
             if n_valid > 0:
-                xy = df_valid[["x", "y"]].to_numpy()
-                seed_offset = (
-                    None
-                    if self.random_seed is None
-                    else self.random_seed + 7919 * phase + w_idx
-                )
-                picked_local = _farthest_point_sampling(
-                    xy, self.fovs_per_well, seed=seed_offset
-                )
+                if self.selection_mode == "extremes":
+                    if self.selection_feature not in df_valid.columns:
+                        raise RuntimeError(
+                            f"selection_feature {self.selection_feature!r} not "
+                            f"found in scan columns {list(df_valid.columns)}. "
+                            f"When using selection_mode='extremes' with a "
+                            f"feature-extractor column, make sure the "
+                            f"feature_extractor produces it."
+                        )
+                    values = df_valid[self.selection_feature].to_numpy(dtype=float)
+                    xy = df_valid[["x", "y"]].to_numpy(dtype=float)
+                    picked_local = _extreme_sampling(
+                        values, self.fovs_per_well, points=xy
+                    )
+                else:
+                    xy = df_valid[["x", "y"]].to_numpy()
+                    seed_offset = (
+                        None
+                        if self.random_seed is None
+                        else self.random_seed + 7919 * phase + w_idx
+                    )
+                    picked_local = _farthest_point_sampling(
+                        xy, self.fovs_per_well, seed=seed_offset
+                    )
                 df_picked = df_valid.iloc[picked_local]
             else:
                 df_picked = df_w.iloc[0:0]  # empty frame with same columns
@@ -742,6 +1045,9 @@ class FOVFinderAgent(PreExperimentAgent):
             "wells_used": list(wells),
             "all_candidates": df_scan,
             "phase": phase,
+            # Per-cell feature DataFrames keyed by candidate index p.
+            # Empty when fov_conditions is not set.
+            "fov_features": getattr(self, "_last_fov_features", {}),
         }
         self.history.append(
             {
