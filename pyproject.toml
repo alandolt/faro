@@ -61,6 +61,22 @@ api74 = [
     "pymmcore==11.10.0.74.1"
 ]
 
+gpax = [
+    "gpax",
+    "joblib",
+    "xgboost",
+    "scikit-learn"
+]
+
+botorch = [
+    "botorch",
+    "gpytorch",
+    "torch",
+    "joblib",
+    "xgboost",
+    "scikit-learn",
+]
+
 
 [[tool.uv.index]]
 name = "pytorch-cu130"
