@@ -27,6 +27,13 @@ dependencies = [
     "virtual-microscope-teaching",
 ]
 
+[project.scripts]
+# Launch napari-micromanager on a faro microscope class (see
+# faro/napari_launcher.py) so the Python-side setup a .cfg can't express --
+# DMD blanking/hold, ROI-follows-binning, laser keepalive, per-scope MDA
+# engine -- is applied before the GUI attaches to the core.
+faro-napari = "faro.napari_launcher:main"
+
 [project.optional-dependencies]
 
 test = [
