@@ -360,12 +360,18 @@ class MoenchCMMCorePlus(pymmcore_plus.CMMCorePlus):
                 x, y = self.getXYPosition() if use_default else self.getXYPosition(dev)
             except Exception:
                 return  # can't read position -> best-effort, don't hang
-            if abs(x - tx) < self.XY_TOLERANCE_UM and abs(y - ty) < self.XY_TOLERANCE_UM:
+            if (
+                abs(x - tx) < self.XY_TOLERANCE_UM
+                and abs(y - ty) < self.XY_TOLERANCE_UM
+            ):
                 return
             time.sleep(self.POSITION_CONFIRM_POLL_S)
         logger.warning(
             "%s not within %.3g um of target %s after %.1f s",
-            dev, self.XY_TOLERANCE_UM, target, self.POSITION_CONFIRM_MAX_S,
+            dev,
+            self.XY_TOLERANCE_UM,
+            target,
+            self.POSITION_CONFIRM_MAX_S,
         )
 
     def _pfs_owns_focus(self) -> bool:
@@ -402,7 +408,10 @@ class MoenchCMMCorePlus(pymmcore_plus.CMMCorePlus):
             time.sleep(self.POSITION_CONFIRM_POLL_S)
         logger.warning(
             "%s not within %.3g um of target %.3f after %.1f s",
-            dev, self.Z_TOLERANCE_UM, target, self.POSITION_CONFIRM_MAX_S,
+            dev,
+            self.Z_TOLERANCE_UM,
+            target,
+            self.POSITION_CONFIRM_MAX_S,
         )
 
     # Verify the filter turret actually reached the requested cube after a
@@ -513,7 +522,9 @@ class MoenchCMMCorePlus(pymmcore_plus.CMMCorePlus):
                 for attempt in range(1, max_corrections + 1):
                     logger.warning(
                         "Filter turret missed state %d; forcing move (%d/%d).",
-                        target_state, attempt, max_corrections,
+                        target_state,
+                        attempt,
+                        max_corrections,
                     )
                     print(
                         f"[WARN] Filter turret missed state {target_state}; "
@@ -530,7 +541,9 @@ class MoenchCMMCorePlus(pymmcore_plus.CMMCorePlus):
                     if _settled_state() == target_state:
                         logger.info(
                             "Filter turret recovered to state %d after %d "
-                            "attempt(s).", target_state, attempt,
+                            "attempt(s).",
+                            target_state,
+                            attempt,
                         )
                         return
 
@@ -680,12 +693,12 @@ class Moench(PyMMCoreMicroscope):
     #   State 16 GreenYellow -> Green_Level
     #   State 32 Red         -> Red_Level
     POWER_PROPERTIES = {
-        "CyanStim": ("LED", "Cyan_Level"),    # state 4
+        "CyanStim": ("LED", "Cyan_Level"),  # state 4
         "VioletStim": ("LED", "Violet_Level"),  # state 1, UV damage stim
         "mScarlet3": ("LED", "Green_Level"),  # state 16
-        "miRFP": ("LED", "Red_Level"),        # state 32
-        "mCitrine": ("LED", "Teal_Level"),    # state 8
-        "mRuby2": ("LED", "Green_Level"),     # state 16
+        "miRFP": ("LED", "Red_Level"),  # state 32
+        "mCitrine": ("LED", "Teal_Level"),  # state 8
+        "mRuby2": ("LED", "Green_Level"),  # state 16
         "mTurquoise": ("LED", "Blue_Level"),  # state 2
         "mNeongreen": ("LED", "Cyan_Level"),  # state 4
     }
@@ -887,9 +900,7 @@ class Moench(PyMMCoreMicroscope):
             finally:
                 done.set()
 
-        threading.Thread(
-            target=_worker, name="DMDCalibration", daemon=True
-        ).start()
+        threading.Thread(target=_worker, name="DMDCalibration", daemon=True).start()
         while not done.wait(timeout=0.05):
             _pump_qt_events()
         if box:
@@ -1127,11 +1138,7 @@ class Moench(PyMMCoreMicroscope):
         so would blind both the base log and the experiment log.
         """
         for name, other in logging.Logger.manager.loggerDict.items():
-            if (
-                name == "faro"
-                or name.startswith("faro.")
-                or name == "pymmcore-plus"
-            ):
+            if name == "faro" or name.startswith("faro.") or name == "pymmcore-plus":
                 continue
             if isinstance(other, logging.Logger):
                 other.setLevel(logging.CRITICAL)
@@ -1279,13 +1286,11 @@ class MoenchMDAEngine(MDAEngine):
         """
         mic = self.microscope
         lock = getattr(mic, "_pfs_lock", None) if mic is not None else None
-        with (lock or nullcontext()):
+        with lock or nullcontext():
             try:
                 self.mmcore.enableContinuousFocus(bool(on))
             except Exception as e:
-                logger.warning(
-                    "Failed to %s PFS: %s", "enable" if on else "disable", e
-                )
+                logger.warning("Failed to %s PFS: %s", "enable" if on else "disable", e)
                 return False
         return True
 
@@ -1388,7 +1393,7 @@ class MoenchMDAEngine(MDAEngine):
             except Exception as e:
                 state, status = "unknown", ""
                 logger.warning("PFS health read failed at run start: %s", e)
-            self._pfs_started_engaged = (state == "engaged")
+            self._pfs_started_engaged = state == "engaged"
             if state == "failing":
                 msg = (
                     f"PFS reports a fault at the start of this run "
@@ -1436,9 +1441,7 @@ class MoenchMDAEngine(MDAEngine):
                     print(f"[WARN] {msg}")
                 else:
                     logger.info("Re-engaged continuous focus (PFS) after run.")
-                    print(
-                        "[INFO] Re-engaged continuous focus (PFS) after run."
-                    )
+                    print("[INFO] Re-engaged continuous focus (PFS) after run.")
 
     def setup_event(self, event: MDAEvent) -> None:
         """Set up the event, wait for the system, and monitor PFS health.

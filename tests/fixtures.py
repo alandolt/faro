@@ -108,8 +108,12 @@ def make_circle_image() -> np.ndarray:
     """256x256 uint16 frame with two bright circles at fixed positions."""
     img = np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.uint16)
     y, x = np.ogrid[:IMG_SIZE, :IMG_SIZE]
-    m1 = (y - CIRCLE1_CENTER[0]) ** 2 + (x - CIRCLE1_CENTER[1]) ** 2 <= CIRCLE1_RADIUS**2
-    m2 = (y - CIRCLE2_CENTER[0]) ** 2 + (x - CIRCLE2_CENTER[1]) ** 2 <= CIRCLE2_RADIUS**2
+    m1 = (y - CIRCLE1_CENTER[0]) ** 2 + (
+        x - CIRCLE1_CENTER[1]
+    ) ** 2 <= CIRCLE1_RADIUS**2
+    m2 = (y - CIRCLE2_CENTER[0]) ** 2 + (
+        x - CIRCLE2_CENTER[1]
+    ) ** 2 <= CIRCLE2_RADIUS**2
     img[m1] = 50_000
     img[m2] = 50_000
     return img
@@ -144,9 +148,7 @@ class CircleScene:
     image_width = IMG_SIZE
     channels = ("phase-contrast", "stim-405")
 
-    def __init__(
-        self, *, blank_frames: set[int] = frozenset(), with_slm: bool = False
-    ):
+    def __init__(self, *, blank_frames: set[int] = frozenset(), with_slm: bool = False):
         self.blank_frames = set(blank_frames)
         self.slm_events: list[tuple[int, np.ndarray]] = []
         self.slm_name = "SLM" if with_slm else None
@@ -174,12 +176,14 @@ def make_pipeline(
     ``with_stim=True`` attaches a default :class:`CenterCircle`
     stimulator; pass ``stimulator=`` directly for anything custom.
     """
-    stim = stimulator if stimulator is not None else (CenterCircle() if with_stim else None)
+    stim = (
+        stimulator
+        if stimulator is not None
+        else (CenterCircle() if with_stim else None)
+    )
     return ImageProcessingPipeline(
         storage_path=storage_path,
-        segmentators=[
-            SegmentationMethod("labels", OtsuSegmentator(), 0, save_tracked)
-        ],
+        segmentators=[SegmentationMethod("labels", OtsuSegmentator(), 0, save_tracked)],
         tracker=tracker,
         feature_extractor=SimpleFE("labels"),
         stimulator=stim,
@@ -190,8 +194,7 @@ def assert_no_background_errors(ctrl: Controller) -> None:
     """Fail with a readable summary if the analyzer recorded any errors."""
     if ctrl.background_errors:
         summary = "\n".join(
-            f"  [{e.source}] {e.exc_type}: {e.message}"
-            for e in ctrl.background_errors
+            f"  [{e.source}] {e.exc_type}: {e.message}" for e in ctrl.background_errors
         )
         raise AssertionError(f"Background errors during acquisition:\n{summary}")
 
