@@ -332,7 +332,8 @@ class Analyzer:
                     )
 
                 if (
-                    isinstance(self.pipeline.stimulator, StimWithImage)
+                    self.pipeline is not None  # a run can have only a writer
+                    and isinstance(self.pipeline.stimulator, StimWithImage)
                     and metadata["img_type"] == ImgType.IMG_RAW
                 ):
                     # Always put in "previous" mode so the next stim event's
@@ -865,10 +866,12 @@ class Controller:
         Returns the sorted events list.
 
         Raises:
-            RuntimeError: If a run is still in progress.
+            RuntimeError: If a run is still in progress, or if the run would
+                store nothing (no writer and no pipeline).
             ValueError: If ``validate=True`` and events fail validation.
         """
         self._require_no_active_run()
+        self._require_storage()
         events = list(events)
         if validate:
             if not self.validate_events(events):
@@ -930,11 +933,13 @@ class Controller:
                 bad event lists surface as exceptions on the calling thread.
 
         Raises:
-            RuntimeError: If a previous run is still in progress. Call
-                ``handle.wait()`` or ``handle.cancel()`` first.
+            RuntimeError: If a previous run is still in progress (call
+                ``handle.wait()`` or ``handle.cancel()`` first), or if the run
+                would store nothing (no writer and no pipeline).
             ValueError: If ``validate=True`` and events fail validation.
         """
         self._require_no_active_run()
+        self._require_storage()
         self._pending_run = None  # a direct run supersedes any staged load
         events = list(events)
         if validate:
@@ -1037,6 +1042,19 @@ class Controller:
             raise RuntimeError(
                 "An experiment is already running. Call handle.wait() or "
                 "handle.cancel() first."
+            )
+
+    def _require_storage(self) -> None:
+        """Raise if a run would store nothing.
+
+        Without a writer, the Analyzer writes TIFFs to the pipeline's
+        storage_path. Without both, every frame is acquired and dropped.
+        """
+        if self._writer is None and self._pipeline is None:
+            raise RuntimeError(
+                "This Controller has no writer and no pipeline, so the run would "
+                "store nothing. Create it with a pipeline, a writer, or both: "
+                "Controller(mic, pipeline, writer=...)."
             )
 
     def _cancel_stim_waits(self) -> None:

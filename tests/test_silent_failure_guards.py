@@ -7,6 +7,8 @@ as new attributes that the Controller never read.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from faro.core.controller import Controller
@@ -14,7 +16,7 @@ from faro.core.writers import TiffWriter
 from faro.tracking.trackpy import TrackerTrackpy
 
 from tests.fake_microscope import FakeMicroscope
-from tests.fixtures import CircleScene, make_pipeline
+from tests.fixtures import CircleScene, make_events, make_pipeline
 
 
 class TestControllerAttributes:
@@ -33,3 +35,24 @@ class TestControllerAttributes:
         with pytest.raises(AttributeError, match="new Controller"):
             ctrl.writer = TiffWriter(tmp_dir)
         assert ctrl.pipeline is None and ctrl.writer is None
+
+
+class TestRunThatStoresNothing:
+    def test_run_without_writer_and_pipeline_is_refused(self):
+        ctrl = Controller(FakeMicroscope(CircleScene()), None)
+        with pytest.raises(RuntimeError, match="store nothing"):
+            ctrl.run_experiment(make_events(2), validate=False)
+        with pytest.raises(RuntimeError, match="store nothing"):
+            ctrl.load_experiment(make_events(2), validate=False)
+
+    def test_run_with_only_a_writer_is_allowed(self, tmp_dir):
+        ctrl = Controller(
+            FakeMicroscope(CircleScene()), None, writer=TiffWriter(tmp_dir)
+        )
+        ctrl.run_experiment(make_events(2), validate=False).wait()
+        ctrl.finish_experiment()
+        assert ctrl.background_errors == []
+        assert sorted(os.listdir(os.path.join(tmp_dir, "raw"))) == [
+            "000_00000.tiff",
+            "000_00001.tiff",
+        ]
