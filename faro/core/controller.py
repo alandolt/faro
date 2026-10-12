@@ -502,6 +502,25 @@ class Analyzer:
             with self.task_lock:
                 self.active_pipeline_tasks -= 1
 
+    def _reload_frame(self, metadata: dict) -> np.ndarray:
+        """Read a deferred frame back from storage, as the pipeline expects it.
+
+        A reference frame is stored in two parts (see ``_do_store``): the
+        imaging channels as "raw" and the reference channels as "ref". The
+        pipeline expects both in one stack, imaging channels first.
+        """
+        img = self.writer.read_raw(metadata)
+        if metadata.get("img_type") != ImgType.IMG_REF or not metadata.get(
+            "ref_channels"
+        ):
+            return img
+        ref = self.writer.read_ref(metadata)
+        if img.ndim == 2:
+            img = img[np.newaxis]
+        if ref.ndim == 2:
+            ref = ref[np.newaxis]
+        return np.concatenate([img, ref], axis=0)
+
     def _deferred_worker(self):
         """Worker thread that processes deferred images when capacity becomes available.
 
@@ -546,7 +565,7 @@ class Analyzer:
                 # writer (rather than hardcoding raw/<fname>.tiff) keeps this
                 # correct across backends.
                 try:
-                    img = self.writer.read_raw(metadata)
+                    img = self._reload_frame(metadata)
                 except Exception as e:
                     with self.task_lock:
                         self.active_pipeline_tasks -= 1

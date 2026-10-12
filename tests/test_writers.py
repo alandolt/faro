@@ -274,6 +274,22 @@ class TestOmeZarrReadRaw:
             writer.close()
 
 
+class TestReadRef:
+    """``read_ref`` returns the reference channels of a reference frame.
+
+    The deferred-pipeline path needs it to rebuild a reference frame from
+    its two stored parts ("raw" and "ref").
+    """
+
+    @pytest.mark.parametrize("cls", [TiffWriter, OmeZarrWriter, OmeZarrWriterPlate])
+    def test_read_ref_roundtrips(self, cls, tmp_dir):
+        writer = cls(tmp_dir)
+        ref = _raw(1, 0, n_channels=1)
+        writer.write(ref, _meta(1, 0), "ref")
+        np.testing.assert_array_equal(writer.read_ref(_meta(1, 0)), ref)
+        writer.close()
+
+
 class TestOmeZarrRawReader:
     """The shared reader must read a *closed* store from a path alone.
 

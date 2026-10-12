@@ -73,6 +73,19 @@ class Writer(Protocol):
         """
         ...
 
+    def read_ref(self, metadata: dict) -> np.ndarray:
+        """Read back the reference channels of a reference frame.
+
+        A reference frame is stored in two parts: its imaging channels as
+        ``"raw"`` and its reference channels as ``"ref"``. The deferred
+        pipeline path needs both: ``read_raw`` for the imaging channels and
+        this method for the reference channels.
+
+        Args:
+            metadata: Event metadata (must contain 'fname', 'fov', 'timestep').
+        """
+        ...
+
     def save_events(self, events) -> None:
         """Save acquisition events as ``events.json`` in the storage path."""
         ...
@@ -117,6 +130,10 @@ class TiffWriter:
     def read_raw(self, metadata: dict) -> np.ndarray:
         fname = metadata["fname"]
         return tifffile.imread(os.path.join(self.storage_path, "raw", fname + ".tiff"))
+
+    def read_ref(self, metadata: dict) -> np.ndarray:
+        fname = metadata["fname"]
+        return tifffile.imread(os.path.join(self.storage_path, "ref", fname + ".tiff"))
 
     def save_events(self, events) -> None:
         from faro.core.conversion import save_events_json
@@ -667,6 +684,14 @@ class OmeZarrWriter:
             else:
                 frame = np.asarray(self._read_raw_from_disk(metadata))
         return self._strip_stim_channels(frame)
+
+    def read_ref(self, metadata: dict) -> np.ndarray:
+        """Read back the reference channels of a reference frame.
+
+        This writer stores reference frames as TIFF files (see ``write``), so
+        the TIFF writer reads them back.
+        """
+        return self._tiff.read_ref(metadata)
 
     def _read_raw_from_disk(self, metadata: dict) -> np.ndarray:
         """Read a raw frame from the on-disk store. ``(c, y, x)``, stim kept.
