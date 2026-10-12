@@ -11,7 +11,8 @@ import os
 
 import pytest
 
-from faro.core.controller import Controller
+import faro.core.controller as controller_module
+from faro.core.controller import KEEP_ERRORS_PER_KIND, Analyzer, Controller
 from faro.core.writers import TiffWriter
 from faro.tracking.trackpy import TrackerTrackpy
 
@@ -56,3 +57,43 @@ class TestRunThatStoresNothing:
             "000_00000.tiff",
             "000_00001.tiff",
         ]
+
+
+class TestErrorCapping:
+    def test_only_the_first_errors_of_a_kind_are_kept(self):
+        analyzer = Analyzer()  # no pipeline, no writer
+        try:
+            for i in range(250):
+                try:
+                    raise ValueError(f"bug {i}")
+                except ValueError as e:
+                    analyzer._record_background_error("pipeline", e)
+            try:
+                raise KeyError("other")
+            except KeyError as e:
+                analyzer._record_background_error("storage", e)
+
+            kept = [(e.source, e.exc_type) for e in analyzer.background_errors]
+            assert kept.count(("pipeline", "ValueError")) == KEEP_ERRORS_PER_KIND
+            assert kept.count(("storage", "KeyError")) == 1
+            assert analyzer.error_summary() == {
+                ("pipeline", "ValueError"): 250,
+                ("storage", "KeyError"): 1,
+            }
+        finally:
+            analyzer.shutdown(wait=False)
+
+    def test_controller_collects_the_counts(self, tmp_dir, monkeypatch):
+        # 8 failing frames, with a lower limit than the default.
+        monkeypatch.setattr(controller_module, "KEEP_ERRORS_PER_KIND", 5)
+        pipeline = make_pipeline(tmp_dir, tracker=TrackerTrackpy(search_range=50))
+
+        def broken_run(*args, **kwargs):
+            raise ValueError("pipeline bug")
+
+        monkeypatch.setattr(pipeline, "run", broken_run)
+        ctrl = Controller(FakeMicroscope(CircleScene()), pipeline)
+        ctrl.run_experiment(make_events(8), validate=False).wait()
+        ctrl.finish_experiment()
+        assert ctrl.error_summary()[("pipeline", "ValueError")] == 8
+        assert len(ctrl.background_errors) == 5

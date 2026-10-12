@@ -24,6 +24,7 @@ import contextlib
 import logging
 import threading
 import traceback
+from collections import Counter
 from dataclasses import dataclass
 from typing import Iterator, Literal
 from faro.core._useq_compat import SLMImage
@@ -38,6 +39,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 logger = logging.getLogger(__name__)
+
+# Background errors of one kind (source and exception type) that are kept
+# with their traceback. Later ones are only counted.
+KEEP_ERRORS_PER_KIND = 50
 
 
 BackgroundErrorSource = Literal["storage", "deferred", "pipeline", "stim_mask"]
@@ -170,7 +175,10 @@ class Analyzer:
         # Experiments intentionally log-and-continue on background-thread
         # errors (one bad filter wheel shouldn't crash a 24h run). Tests
         # assert this list is empty at end of run to catch silent failures.
+        # The list keeps the first errors of each kind; _error_counts counts
+        # all of them (see _record_background_error).
         self.background_errors: list[BackgroundError] = []
+        self._error_counts: Counter = Counter()
         self._error_lock = threading.Lock()
         self._stim_mask_timeout = stim_mask_timeout
 
@@ -233,16 +241,44 @@ class Analyzer:
         ``traceback.format_exc()`` call below reads the current
         exception context and returns ``'NoneType: None\\n'`` if
         there is none.
+
+        Only the first ``KEEP_ERRORS_PER_KIND`` errors of each kind (source
+        and exception type) are kept and printed with their traceback. A bug
+        that fails on every frame would otherwise add one traceback per
+        frame. Later errors of the same kind are only counted, with a short
+        log line every 100. ``error_summary()`` gives the counts.
         """
-        tb = traceback.format_exc()
+        exc_type = type(exc).__name__
         msg = str(exc)
-        print(f"[Analyzer] {source} error: {type(exc).__name__}: {msg}")
-        print(tb)
-        logger.error("%s error: %s: %s\n%s", source, type(exc).__name__, msg, tb)
+        kind = (source, exc_type)
         with self._error_lock:
-            self.background_errors.append(
-                BackgroundError(source, type(exc).__name__, msg, tb)
-            )
+            self._error_counts[kind] += 1
+            n = self._error_counts[kind]
+            if n <= KEEP_ERRORS_PER_KIND:
+                tb = traceback.format_exc()
+                self.background_errors.append(
+                    BackgroundError(source, exc_type, msg, tb)
+                )
+
+        if n <= KEEP_ERRORS_PER_KIND:
+            print(f"[Analyzer] {source} error: {exc_type}: {msg}")
+            print(tb)
+            logger.error("%s error: %s: %s\n%s", source, exc_type, msg, tb)
+            if n == KEEP_ERRORS_PER_KIND:
+                logger.error(
+                    "%s error %s happened %d times. Further ones are only "
+                    "counted (see error_summary()).",
+                    source,
+                    exc_type,
+                    n,
+                )
+        elif n % 100 == 0:
+            logger.error("%s error %s, %d times so far: %s", source, exc_type, n, msg)
+
+    def error_summary(self) -> Counter:
+        """Number of background errors per (source, exception type)."""
+        with self._error_lock:
+            return Counter(self._error_counts)
 
     @property
     def stimulator_needs_data(self) -> bool:
@@ -766,6 +802,7 @@ class Controller:
         # Background-thread errors harvested from the Analyzer on shutdown.
         # Survives finish_experiment() so tests/notebooks can inspect it.
         self.background_errors: list[BackgroundError] = []
+        self._error_counts: Counter = Counter()  # all errors, see error_summary()
 
         # Fatal condition raised from the signal-callback thread, surfaced
         # through the handle's RunStatus.fatal_error.
@@ -1228,6 +1265,7 @@ class Controller:
                     # the Analyzer is still alive and the caller can retry.
                     self._analyzer.shutdown(wait=True, drain_timeout=drain_timeout)
                     self.background_errors.extend(self._analyzer.background_errors)
+                    self._error_counts.update(self._analyzer.error_summary())
                     self._analyzer = None
                 self._t_offset = 0
                 self._time_offset = 0.0
@@ -1261,6 +1299,14 @@ class Controller:
         app = QCoreApplication.instance()
         if app is not None:
             app.processEvents()
+
+    def error_summary(self) -> Counter:
+        """Number of background errors per (source, exception type).
+
+        ``background_errors`` keeps only the first errors of each kind. This
+        gives the full counts of all finished experiments.
+        """
+        return Counter(self._error_counts)
 
     def queue_stats(self) -> "QueueStats | None":
         """Snapshot of the Analyzer's queue depths, or None when idle.
