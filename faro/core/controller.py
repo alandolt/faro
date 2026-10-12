@@ -814,6 +814,34 @@ class Controller:
         """
         return self._current_handle
 
+    # pipeline and writer are fixed when the Controller is created. Without
+    # these properties, ``ctrl.pipeline = p`` would silently create a new
+    # attribute that nothing reads, and every run would store nothing.
+
+    @property
+    def pipeline(self) -> ImageProcessingPipeline | None:
+        """The pipeline every acquisition of this Controller runs (read-only)."""
+        return self._pipeline
+
+    @pipeline.setter
+    def pipeline(self, value) -> None:
+        raise AttributeError(
+            "Controller.pipeline cannot be changed. Create a new "
+            "Controller(mic, pipeline, writer=...) instead."
+        )
+
+    @property
+    def writer(self) -> Writer | None:
+        """The storage backend frames are written through (read-only)."""
+        return self._writer
+
+    @writer.setter
+    def writer(self, value) -> None:
+        raise AttributeError(
+            "Controller.writer cannot be changed. Create a new "
+            "Controller(mic, pipeline, writer=...) instead."
+        )
+
     @property
     def pending_events(self) -> list | None:
         """Events staged via :meth:`load_experiment` but not yet started."""
