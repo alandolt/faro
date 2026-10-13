@@ -8,6 +8,7 @@ as new attributes that the Controller never read.
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 
@@ -97,3 +98,25 @@ class TestErrorCapping:
         ctrl.finish_experiment()
         assert ctrl.error_summary()[("pipeline", "ValueError")] == 8
         assert len(ctrl.background_errors) == 5
+
+
+class TestWaitIdle:
+    def test_waits_for_a_frame_that_is_still_being_stored(self, tmp_dir, monkeypatch):
+        """wait_idle returned while the storage worker still wrote the last frame.
+
+        The queue was empty, but the frame was not handed to the pipeline yet,
+        so a caller could read the tracks before the last frame was in them.
+        """
+        store = Analyzer._do_store
+
+        def slow_store(self, *args, **kwargs):
+            time.sleep(0.3)
+            store(self, *args, **kwargs)
+
+        monkeypatch.setattr(Analyzer, "_do_store", slow_store)
+        pipeline = make_pipeline(tmp_dir, tracker=TrackerTrackpy(search_range=50))
+        ctrl = Controller(FakeMicroscope(CircleScene()), pipeline)
+        ctrl.run_experiment(make_events(3), validate=False).wait()
+        assert ctrl._analyzer.wait_idle(timeout=10)
+        assert ctrl._analyzer.stored_images == 3
+        ctrl.finish_experiment()

@@ -602,6 +602,10 @@ class Analyzer:
 
             except Exception as e:
                 self._record_background_error("deferred", e)
+            finally:
+                # wait_idle counts the frame until here (a frame put back
+                # above counts again as a new task).
+                self._deferred_queue.task_done()
 
     def run(self, img: np.array, event: MDAEvent) -> dict:
         """Called from MDA callback - must return INSTANTLY.
@@ -733,8 +737,11 @@ class Analyzer:
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         while deadline is None or time.monotonic() < deadline:
-            storage_empty = self._storage_queue.qsize() == 0
-            deferred_empty = self._deferred_queue.qsize() == 0
+            # A frame counts until its worker calls task_done(), after it is
+            # handed to the pipeline. qsize() alone would miss a frame that a
+            # worker has taken from its queue but not handed over yet.
+            storage_empty = self._storage_queue.unfinished_tasks == 0
+            deferred_empty = self._deferred_queue.unfinished_tasks == 0
             with self.task_lock:
                 pipeline_idle = self.active_pipeline_tasks == 0
             if storage_empty and deferred_empty and pipeline_idle:
