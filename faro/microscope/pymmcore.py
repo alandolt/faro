@@ -203,6 +203,7 @@ class PyMMCoreMicroscope(AbstractMicroscope):
         if self.mmc is None:
             return ok  # nothing else to validate against
         from faro.core.utils import validate_hardware
+
         ok_mmc = validate_hardware(
             events, self.mmc, power_properties=self.get_power_properties()
         )
