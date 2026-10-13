@@ -551,6 +551,14 @@ class Analyzer:
                             print(
                                 f"[Analyzer] Still overloaded -> requeue deferred (active={self.active_pipeline_tasks}, max={self.max_queue_size})"
                             )
+                        # Keep this sleep inside the lock. Holding the lock
+                        # here blocks _try_submit_pipeline, so a freed
+                        # pipeline slot goes to a deferred (older) frame and
+                        # not to a new frame. Tracking needs frame N-1 before
+                        # frame N. If new frames take the slots, they block
+                        # in get_predecessor until _queue_timeout, and
+                        # TestBurstNoSignalLoss fails. See TODO.md for a
+                        # cleaner fix.
                         time.sleep(0.5)
                         continue
 
