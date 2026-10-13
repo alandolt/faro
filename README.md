@@ -65,6 +65,25 @@ handle.wait()  # run_experiment is non-blocking; wait() blocks until done
 
 The virtual microscope ([virtual-microscope-teaching](https://github.com/hinderling/virtual-microscope-teaching), a small pure-Python simulator of light-responsive cells behind the pymmcore-plus API) is part of the base install, so the example and the templates run right after `uv sync`. The test suite executes them on it, so they always match the code. Real experiments live in the separate [faro-experiments](https://github.com/pertzlab/faro-experiments) repository: one folder per experiment, each pinned to a faro commit.
 
+## GUI: napari-micromanager on a faro scope
+
+`python -m napari_micromanager -c some.cfg` only loads a Micro-Manager cfg, which
+can't express the Python-side setup several scopes need (DMD blanking/hold,
+ROI-follows-binning, laser keepalive, the per-scope MDA engine). `faro-napari`
+builds the microscope class first, then hands its configured core to the plugin:
+
+```bash
+uv run faro-napari moench
+uv run faro-napari moench --kwarg uncropped=True
+uv run faro-napari demo                          # MM demo config, no hardware
+uv run faro-napari mypkg.scopes:MyScope --kwarg port=3   # any microscope class
+```
+
+`--kwarg` values are parsed as Python literals. `mic` and `mmcore` are in the
+napari console, so e.g. `mic.calibrate_dmd(CyanStim)` or
+`mic.dmd.affine = np.load(...)` can be run there. See
+[faro/napari_launcher.py](faro/napari_launcher.py).
+
 ## Pipeline
 
 The pipeline is modular, each component is independent and can be swapped or set to `None`.

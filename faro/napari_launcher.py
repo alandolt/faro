@@ -1,0 +1,154 @@
+"""Launch napari-micromanager on a faro microscope class.
+
+``python -m napari_micromanager -c some.cfg`` only loads a Micro-Manager
+``.cfg``. Several Pertzlab scopes need Python-side setup that a cfg cannot
+express -- the DMD wake/blank loop and hold exposure, the ROI-follows-binning
+hook, the laser keepalive, the per-scope MDA engine. This launcher builds the
+microscope class first and hands its configured core to
+``MainWindow(viewer, mmcore=...)``. The rest mirrors upstream's
+``napari_micromanager.__main__``.
+
+Examples
+--------
+    uv run faro-napari moench
+    uv run faro-napari moench --kwarg uncropped=True
+    uv run faro-napari mypkg.scopes:MyScope --kwarg port=3
+
+Inside the napari console, ``mic`` and ``mmcore`` are available, so e.g.
+``mic.calibrate_dmd(CyanStim)`` can be run interactively.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import time
+from collections.abc import Sequence
+from importlib import import_module
+from typing import Any
+
+SCOPES = {
+    "moench": "faro.microscope.pertzlab.moench:Moench",
+    "niesen": "faro.microscope.pertzlab.niesen:Niesen",
+    "jungfrau": "faro.microscope.pertzlab.jungfrau:Jungfrau",
+    "demo": "faro.microscope.demo:MMDemo",
+}
+
+
+def parse_kwarg(item: str) -> tuple[str, Any]:
+    """Parse a ``key=value`` CLI pair; the value is Python-literal-parsed.
+
+    ``uncropped=False`` (or ``false``) yields ``False``, not a truthy string.
+    Values that are not Python literals stay strings, so unquoted Windows
+    paths work.
+    """
+    key, sep, raw = item.partition("=")
+    if not sep:
+        raise SystemExit(f"--kwarg expects key=value, got {item!r}.")
+    keywords = {"true": True, "false": False, "none": None}
+    if raw.strip().lower() in keywords:
+        return key.strip(), keywords[raw.strip().lower()]
+    try:
+        return key.strip(), ast.literal_eval(raw)
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        return key.strip(), raw
+
+
+def _cache_snapped_image(core) -> None:
+    """Let ``getImage()`` be called more than once per ``snapImage()``.
+
+    napari-micromanager reads the snap buffer in its ``imageSnapped`` slot
+    (``CoreViewerLink._image_snapped``), and the slot runs synchronously
+    inside ``snapImage()`` on the psygnal backend. ``CMMCorePlus.snap()`` --
+    what the Snap button calls -- then reads the buffer a second time. The
+    Andor SDK3 and PVCAM adapters hand out each snapped frame only once, so
+    the second read raises "Camera image buffer read failed" (the demo
+    camera does not, which is why ``faro-napari demo`` never showed it).
+
+    The first read of each camera channel after a snap is kept, and later
+    callers get a copy of it until the next snap. While an MDA runs the cache
+    is bypassed: the plugin does not read snaps then, and faro's engines keep
+    the plain single-read path.
+    """
+    snap_image = core.snapImage
+    get_image = core.getImage
+    cache: dict[int, Any] = {}
+
+    def snapImage(*args, **kwargs):
+        cache.clear()
+        return snap_image(*args, **kwargs)
+
+    def getImage(numChannel=None, *, fix=True):
+        if core.mda.is_running():
+            return get_image(numChannel, fix=fix)
+        # None means the first channel, so getImage() and getImage(0) (e.g.
+        # from getTaggedImage) share one read. The raw frame is cached and
+        # fixImage, which leaves a fixed image unchanged, is applied per call.
+        channel = numChannel or 0
+        if channel not in cache:
+            cache[channel] = get_image(numChannel, fix=False)
+        img = cache[channel].copy()
+        return core.fixImage(img) if fix else img
+
+    core.snapImage = snapImage
+    core.getImage = getImage
+
+
+def main(args: Sequence[str] | None = None) -> None:
+    """Build the microscope, then run napari-micromanager on its core."""
+    parser = argparse.ArgumentParser(
+        prog="faro-napari",
+        description="Run napari-micromanager on a faro microscope class.",
+        epilog=f"Registered scopes: {', '.join(SCOPES)}",
+    )
+    parser.add_argument(
+        "scope", help="registered scope name, or 'module.path:ClassName'"
+    )
+    parser.add_argument(
+        "--kwarg",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="keyword argument for the microscope class (repeatable)",
+    )
+    parsed_args = parser.parse_args(args)
+
+    target = SCOPES.get(parsed_args.scope, parsed_args.scope)
+    if ":" not in target:
+        parser.error(f"unknown scope {target!r}")
+    module_path, _, class_name = target.partition(":")
+    cls = getattr(import_module(module_path), class_name)
+    mic = cls(**dict(parse_kwarg(item) for item in parsed_args.kwarg))
+    _cache_snapped_image(mic.mmc)
+
+    # Imported only after the microscope is built: pymmcore_widgets sets
+    # PYMM_SIGNALS_BACKEND=qt when unset, and faro needs the psygnal backend.
+    import napari
+    from napari_micromanager.main_window import MainWindow
+
+    viewer = napari.Viewer()
+    win = MainWindow(viewer, mmcore=mic.mmc)
+    dw = viewer.window.add_dock_widget(win, name="MicroManager", area="top")
+    if hasattr(dw, "_close_btn"):
+        dw._close_btn = False
+    viewer.update_console({"mic": mic, "mmcore": mic.mmc})
+    napari.run()
+
+    # The window is closed, but its widgets are still connected to the core.
+    # Block the signals so the teardown does not call into deleted Qt objects.
+    mic.mmc.events.block()
+    mic.mmc.mda.events.block()
+    # The plugin does not cancel an MDA on a core it does not own. Cancel it
+    # and wait, so the devices are not unloaded while the engine still uses
+    # them.
+    mic.mmc.mda.cancel()
+    while mic.mmc.mda.is_running():
+        time.sleep(0.1)
+    # Explicit teardown: the atexit hook of PyMMCoreMicroscope only holds a
+    # weakref, and IPython's exit hook frees ``mic`` (the console namespace
+    # held the last reference) before that hook runs.
+    mic._teardown_hardware()
+
+
+if __name__ == "__main__":
+    main()
