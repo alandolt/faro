@@ -705,13 +705,14 @@ The second line opens the [example notebook](examples/live_experiment.ipynb) in 
 
 ### Extras
 
-Optional dependency groups are available for segmentation backends and testing:
+Optional dependency groups are available for segmentation backends, widget builds and testing:
 
 | Extra | Packages | Use case |
 |-------|----------|----------|
 | `cellpose` | cellpose, torch | Cellpose segmentation |
 | `stardist` | stardist, tensorflow, csbdeep | StarDist segmentation |
 | `convpaint` | napari-convpaint, scipy | ConvPaint segmentation |
+| `pertzlab-widgets` | pymmcore-widgets from the [pertzlab branch](https://github.com/pertzlab/pymmcore-widgets/tree/pertzlab) | Lab widgets (stage map, continuous focus) and fixes. `faro-napari` adds toolbar buttons for them. |
 | `test` | pytest, nbclient, motile | Run the test suite, including the notebook tests. |
 
 Install one or more extras with `uv sync`:
@@ -720,7 +721,10 @@ Install one or more extras with `uv sync`:
 uv sync --extra cellpose
 uv sync --extra cellpose --extra stardist
 uv sync --extra test
+uv sync --extra pertzlab-widgets
 ```
+
+Without `pertzlab-widgets`, pymmcore-widgets comes from PyPI and `faro-napari` runs without the lab widgets. The extra works only with uv: pip ignores `[tool.uv.sources]` and installs the PyPI release.
 
 Alternatively, with pip (installs the package with all its dependencies):
 

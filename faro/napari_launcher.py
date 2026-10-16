@@ -16,22 +16,39 @@ Examples
 
 Inside the napari console, ``mic`` and ``mmcore`` are available, so e.g.
 ``mic.calibrate_dmd(CyanStim)`` can be run interactively.
+
+The widgets in ``PERTZLAB_WIDGETS`` get a button in the plugin's toolbar. They
+come from the pertzlab branch of pymmcore-widgets, installed with
+``uv sync --extra pertzlab-widgets``.
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import logging
 import time
 from collections.abc import Sequence
+from functools import partial
 from importlib import import_module
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 SCOPES = {
     "moench": "faro.microscope.pertzlab.moench:Moench",
     "niesen": "faro.microscope.pertzlab.niesen:Niesen",
     "jungfrau": "faro.microscope.pertzlab.jungfrau:Jungfrau",
     "demo": "faro.microscope.demo:MMDemo",
+}
+
+# Widgets from the pertzlab pymmcore-widgets branch that get a button in the
+# napari-micromanager toolbar: toolbar label -> (pymmcore_widgets class name,
+# MDI6 icon name). Uncomment an entry to add its button, comment it out to
+# drop it.
+PERTZLAB_WIDGETS = {
+    "Stage Map": ("StageMapWidget", "map_marker_multiple"),
+    "Continuous Focus": ("ContinuousFocusWidget", "focus_auto"),
 }
 
 
@@ -94,6 +111,93 @@ def _cache_snapped_image(core) -> None:
     core.getImage = getImage
 
 
+def _stage_map_widget(*, parent, mmcore):
+    """Build a ``StageMapWidget`` that shows the MDA widget's positions.
+
+    The map has no position list of its own; it binds to an existing one. The
+    MDA dock is opened first so there is a list to bind to. Without it the map
+    would start empty until a list is picked from the map's toolbar.
+    """
+    from pymmcore_widgets import StageMapWidget
+
+    parent._show_dock_widget("MDA")
+    widget = StageMapWidget(parent=parent, mmcore=mmcore)
+    widget.bindToFirstPositionTable()
+    return widget
+
+
+def _continuous_focus_widget(mic, *, parent, mmcore):
+    """Build a ``ContinuousFocusWidget`` that holds the scope's PFS lock.
+
+    The widget polls the autofocus device every second from the GUI thread. On
+    Moench, a PFS access while the MDA engine reloads the autofocus device
+    crashes the process. So when the scope has a ``_pfs_lock``, every read and
+    write of the widget takes it.
+    """
+    from pymmcore_widgets import ContinuousFocusWidget
+
+    lock = getattr(mic, "_pfs_lock", None)
+    if lock is None:
+        return ContinuousFocusWidget(parent=parent, mmcore=mmcore)
+
+    def locked(func):
+        def call(*args):
+            with lock:
+                return func(*args)
+
+        return call
+
+    return ContinuousFocusWidget(
+        parent=parent,
+        mmcore=mmcore,
+        enabled_source=locked(mmcore.isContinuousFocusEnabled),
+        locked_source=locked(mmcore.isContinuousFocusLocked),
+        set_enabled=locked(mmcore.enableContinuousFocus),
+    )
+
+
+def _add_pertzlab_widgets(mic) -> None:
+    """Add the ``PERTZLAB_WIDGETS`` buttons to the napari-micromanager toolbar.
+
+    The plugin builds its toolbar buttons from its module-level
+    ``DOCK_WIDGETS`` when ``MainWindow`` is created, so this must run before
+    that. A widget is built the first time its button is clicked, as
+    ``factory(parent=window, mmcore=core)``.
+
+    Without the ``pertzlab-widgets`` extra, pymmcore_widgets has none of these
+    widgets and the plugin runs as is. A widget missing from a pertzlab build
+    is skipped with a warning.
+    """
+    import pymmcore_widgets
+    from fonticon_mdi6 import MDI6
+    from napari_micromanager._gui_objects._toolbar import DOCK_WIDGETS
+
+    if not any(
+        hasattr(pymmcore_widgets, class_name)
+        for class_name, _ in PERTZLAB_WIDGETS.values()
+    ):
+        logger.info(
+            "pymmcore-widgets is not the pertzlab build; no extra toolbar "
+            "buttons (`uv sync --extra pertzlab-widgets` adds them)."
+        )
+        return
+
+    factories = {
+        "StageMapWidget": _stage_map_widget,
+        "ContinuousFocusWidget": partial(_continuous_focus_widget, mic),
+    }
+    for label, (class_name, icon_name) in PERTZLAB_WIDGETS.items():
+        if not hasattr(pymmcore_widgets, class_name):
+            logger.warning(
+                "pymmcore_widgets has no %s. Skipping the %r button.",
+                class_name,
+                label,
+            )
+            continue
+        factory = factories.get(class_name, getattr(pymmcore_widgets, class_name))
+        DOCK_WIDGETS[label] = (factory, getattr(MDI6, icon_name))
+
+
 def main(args: Sequence[str] | None = None) -> None:
     """Build the microscope, then run napari-micromanager on its core."""
     parser = argparse.ArgumentParser(
@@ -126,6 +230,7 @@ def main(args: Sequence[str] | None = None) -> None:
     import napari
     from napari_micromanager.main_window import MainWindow
 
+    _add_pertzlab_widgets(mic)
     viewer = napari.Viewer()
     win = MainWindow(viewer, mmcore=mic.mmc)
     dw = viewer.window.add_dock_widget(win, name="MicroManager", area="top")

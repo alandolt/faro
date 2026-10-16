@@ -3,13 +3,14 @@ name = "my-experiment"            # rename: lowercase, hyphens, no spaces
 version = "0.0.0"
 requires-python = ">=3.12"
 dependencies = [
-    # faro's own git sources (pertzlab pymmcore-widgets, napari-micromanager
-    # main, the virtual microscope) and index pins carry over to this project.
+    # faro's own git sources (napari-micromanager main, the virtual
+    # microscope) and index pins carry over to this project.
     "faro",
     # "jupyterlab",   # uncomment if you run notebooks with Jupyter rather than VS Code
     # Add faro extras you need, for example:
     # "faro[cellpose]",
     # "faro[stardist]",
+    # "faro[pertzlab-widgets]",   # the lab's pymmcore-widgets (stage map, ...)
 ]
 
 [tool.uv.sources]
