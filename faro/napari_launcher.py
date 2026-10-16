@@ -117,13 +117,47 @@ def _stage_map_widget(*, parent, mmcore):
     The map has no position list of its own; it binds to an existing one. The
     MDA dock is opened first so there is a list to bind to. Without it the map
     would start empty until a list is picked from the map's toolbar.
+
+    The plugin docks the returned widget as a tab next to the MDA dock, after
+    this factory returns. So the MDA dock is moved below the map on the next
+    pass of the event loop, and both are visible at the same time.
     """
     from pymmcore_widgets import StageMapWidget
+    from qtpy.QtCore import QTimer
 
     parent._show_dock_widget("MDA")
     widget = StageMapWidget(parent=parent, mmcore=mmcore)
     widget.bindToFirstPositionTable()
+    QTimer.singleShot(0, partial(_dock_mda_below, parent, widget))
     return widget
+
+
+def _dock_mda_below(parent, widget) -> None:
+    """Dock the MDA widget below the dock of ``widget``, not as a tab.
+
+    ``splitDockWidget`` adds the second dock as a tab if the first one is in a
+    tab group, and the plugin tabifies every dock it adds. So both docks are
+    taken out of their tab groups first.
+    """
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QDockWidget
+
+    top = widget.parent()
+    while top is not None and not isinstance(top, QDockWidget):
+        top = top.parent()
+    bottom = parent._dock_widgets.get("MDA")
+    if top is None or bottom is None:
+        logger.warning("Stage map or MDA dock not found; not docking them together.")
+        return
+
+    win = parent.viewer.window._qt_window
+    for dock in (top, bottom):
+        win.removeDockWidget(dock)
+    win.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, top)
+    win.splitDockWidget(top, bottom, Qt.Orientation.Vertical)
+    # removeDockWidget hides a dock.
+    top.show()
+    bottom.show()
 
 
 def _continuous_focus_widget(mic, *, parent, mmcore):
