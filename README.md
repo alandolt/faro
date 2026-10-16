@@ -84,6 +84,36 @@ napari console, so e.g. `mic.calibrate_dmd(CyanStim)` or
 `mic.dmd.affine = np.load(...)` can be run there. See
 [faro/napari_launcher.py](faro/napari_launcher.py).
 
+### Lab widgets
+
+With the `pertzlab-widgets` [extra](#extras), pymmcore-widgets comes from the
+[pertzlab branch](https://github.com/pertzlab/pymmcore-widgets/tree/pertzlab),
+and `faro-napari` adds two buttons to the plugin's toolbar:
+
+* **Stage Map**: a live map of the XY stage with a well plate overlay and the
+  MDA positions; a double-click moves the stage there. It opens with the MDA
+  widget docked below it, in the same column.
+* **Continuous Focus**: turns the hardware autofocus (e.g. PFS) on and off, and
+  shows whether it is locked in focus.
+
+`uv run` syncs the environment to the extras on its command line before it
+runs. So give the extras on each run, together with the pymmcore extra for the
+scope's Micro-Manager (`api74` for Jungfrau, `api75` for Moench):
+
+```bash
+uv run --extra api74 --extra pertzlab-widgets faro-napari jungfrau
+```
+
+Or sync once, then run without a sync:
+
+```bash
+uv sync --extra api74 --extra pertzlab-widgets
+uv run --no-sync faro-napari jungfrau
+```
+
+A `uv run` or `uv sync` without these extras puts back pymmcore-widgets from
+PyPI (no lab widgets) and the default pymmcore.
+
 ## Pipeline
 
 The pipeline is modular, each component is independent and can be swapped or set to `None`.
