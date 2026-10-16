@@ -404,12 +404,16 @@ class ImageProcessingPipeline:
             )
 
         # Split ref channels off the combined image so that segmentation and
-        # regular feature extraction only see imaging channels.
+        # regular feature extraction only see imaging channels. A ref phase
+        # (img_type IMG_REF without ref_channels, see README) has no separate
+        # ref channels: its imaging channels are the reference.
         img_ref = None
         if metadata.get("img_type") == ImgType.IMG_REF:
             n_ref_channels = len(metadata.get("ref_channels", ()))
             n_channels = len(metadata.get("channels", ()))
-            if n_ref_channels > 0 and img.shape[0] > n_channels:
+            if n_ref_channels == 0:
+                img_ref = img
+            elif img.shape[0] > n_channels:
                 img_ref = img[n_channels:]
                 img = img[:n_channels]
 
@@ -513,8 +517,8 @@ class ImageProcessingPipeline:
                     and "particle" in df_tracked.columns
                 ):
                     if img_ref is None:
-                        # The reference channels are not in the image. Do not
-                        # measure the imaging channels instead.
+                        # ref_channels are set, but they are not in the image.
+                        # Do not measure the imaging channels instead.
                         logger.warning(
                             "Reference frame fov=%s t=%s has no reference "
                             "channels (image shape %s); no reference features "

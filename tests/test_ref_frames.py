@@ -1,8 +1,12 @@
-"""Reference frames on the deferred pipeline path.
+"""Reference frames in the pipeline.
 
 A reference frame is stored in two parts: its imaging channels as "raw" and
 its reference channels as "ref". When the pipeline is overloaded, a frame is
 reloaded from storage later; the reload must give the pipeline both parts.
+
+A ref phase (``rtm_metadata={"img_type": ImgType.IMG_REF}`` without
+``ref_channels``, see README) has no separate reference channels: its imaging
+channels are the reference.
 """
 
 from __future__ import annotations
@@ -12,13 +16,14 @@ import logging
 import numpy as np
 from useq import MDAEvent
 
-from faro.core.controller import Analyzer
-from faro.core.data_structures import ImgType
+from faro.core.controller import Analyzer, Controller
+from faro.core.data_structures import ImgType, RTMSequence, combine
 from faro.core.writers import TiffWriter
 from faro.feature_extraction.base_ref import FeatureExtractorRef
 from faro.tracking.trackpy import TrackerTrackpy
 
-from tests.fixtures import make_circle_image, make_pipeline
+from tests.fake_microscope import FakeMicroscope
+from tests.fixtures import CircleScene, make_circle_image, make_pipeline
 
 H, W = make_circle_image().shape
 
@@ -85,3 +90,32 @@ class TestReferenceChannelsMissing:
             assert "has no reference channels" in caplog.text
         finally:
             analyzer.shutdown(wait=False)
+
+
+class TestRefPhase:
+    def test_ref_phase_is_measured(self, tmp_dir, caplog):
+        """The README's ref phase, chained with combine(), gets ref features."""
+        pipeline = make_pipeline(tmp_dir, tracker=TrackerTrackpy(search_range=50))
+        spy = SpyRefFE()
+        pipeline.feature_extractor_ref = spy
+        experiment = RTMSequence(
+            time_plan={"interval": 0, "loops": 2},
+            stage_positions=[(0, 0, 0)],
+            channels=[{"config": "phase-contrast", "exposure": 10}],
+        )
+        ref_phase = RTMSequence(
+            time_plan={"interval": 0, "loops": 1},
+            stage_positions=[(0, 0, 0)],
+            channels=[{"config": "phase-contrast", "exposure": 10}],
+            rtm_metadata={"img_type": ImgType.IMG_REF},
+        )
+        events = combine(experiment, ref_phase, axis="t")
+        ctrl = Controller(FakeMicroscope(CircleScene()), pipeline)
+        with caplog.at_level(logging.WARNING, logger="faro.core.pipeline"):
+            try:
+                ctrl.run_experiment(events, validate=False).wait()
+            finally:
+                ctrl.finish_experiment()
+        assert ctrl.background_errors == []
+        assert spy.calls == 1
+        assert "has no reference channels" not in caplog.text
