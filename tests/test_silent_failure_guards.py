@@ -120,3 +120,80 @@ class TestWaitIdle:
         assert ctrl._analyzer.wait_idle(timeout=10)
         assert ctrl._analyzer.stored_images == 3
         ctrl.finish_experiment()
+
+
+class TestFrameCallbacks:
+    def test_mda_that_does_not_start_leaves_no_callback(self, tmp_dir, monkeypatch):
+        # A callback left connected would get every frame of the next run twice.
+        mic = FakeMicroscope(CircleScene())
+        ctrl = Controller(mic, None, writer=TiffWriter(tmp_dir))
+        frame_ready = mic.mmc.mda.events.frameReady
+        n_before = len(frame_ready)
+
+        def busy(event_iter):
+            raise ValueError(
+                "Cannot start an MDA while the previous MDA is still running."
+            )
+
+        monkeypatch.setattr(mic, "run_mda", busy)
+        try:
+            with pytest.raises(ValueError, match="still running"):
+                ctrl.run_experiment(make_events(2), validate=False).wait()
+        finally:
+            ctrl.finish_experiment()
+        assert len(frame_ready) == n_before
+
+        monkeypatch.undo()
+        try:
+            handle = ctrl.run_experiment(make_events(2), validate=False)
+            handle.wait()
+        finally:
+            ctrl.finish_experiment()
+        assert handle.status().n_frames_received == 2
+
+    def test_connect_error_is_not_hidden(self, tmp_dir, monkeypatch):
+        # On the Qt signal backend connect_frame raises before it connects,
+        # and the Qt disconnect then raises for a callback that is not
+        # connected.
+        mic = FakeMicroscope(CircleScene())
+        ctrl = Controller(mic, None, writer=TiffWriter(tmp_dir))
+
+        def qt_connect(callback):
+            raise RuntimeError("pymmcore-plus is using the Qt MDA signal backend")
+
+        def qt_disconnect(callback):
+            raise TypeError("'method' object is not connected")
+
+        monkeypatch.setattr(mic, "connect_frame", qt_connect)
+        monkeypatch.setattr(mic, "disconnect_frame", qt_disconnect)
+        try:
+            with pytest.raises(RuntimeError, match="Qt MDA signal backend"):
+                ctrl.run_experiment(make_events(2), validate=False).wait()
+        finally:
+            ctrl.finish_experiment()
+        assert ctrl._active_handle is None
+
+    def test_incomplete_timepoint_is_dropped(self, tmp_dir, monkeypatch):
+        mic = FakeMicroscope(CircleScene())
+        ctrl = Controller(mic, None, writer=TiffWriter(tmp_dir))
+
+        # The first snap (t=0, c=0) fails. pymmcore-plus logs it and goes on,
+        # so only c=1 of t=0 arrives.
+        real_snap = mic.mmc.snapImage
+        n_snaps = 0
+
+        def snap_fails_once(*args, **kwargs):
+            nonlocal n_snaps
+            n_snaps += 1
+            if n_snaps == 1:
+                raise RuntimeError("camera timeout")
+            return real_snap(*args, **kwargs)
+
+        monkeypatch.setattr(mic.mmc, "snapImage", snap_fails_once)
+        try:
+            # A lost frame must not stop the run: wait() raises on a fatal error.
+            events = make_events(2, n_channels=2)
+            ctrl.run_experiment(events, validate=False).wait()
+            assert ctrl._frame_buffers == {}
+        finally:
+            ctrl.finish_experiment()

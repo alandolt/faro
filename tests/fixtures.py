@@ -119,14 +119,19 @@ def make_circle_image() -> np.ndarray:
     return img
 
 
-def make_events(n_timepoints: int, *, stim_frames=()) -> list[RTMEvent]:
-    """One-channel events with optional stim on selected frames."""
+def make_events(
+    n_timepoints: int, *, stim_frames=(), n_channels: int = 1
+) -> list[RTMEvent]:
+    """Events with optional stim on selected frames."""
     stim_set = set(stim_frames)
     stim_ch = (Channel(config="stim-405", exposure=100),)
+    channels = tuple(
+        Channel(config="phase-contrast", exposure=50) for _ in range(n_channels)
+    )
     return [
         RTMEvent(
             index={"t": t, "p": 0},
-            channels=(Channel(config="phase-contrast", exposure=50),),
+            channels=channels,
             stim_channels=stim_ch if t in stim_set else (),
             metadata={},
         )

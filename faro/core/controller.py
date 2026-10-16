@@ -1424,8 +1424,6 @@ class Controller:
             with contextlib.suppress(Exception):
                 mmc.stopSequenceAcquisition()
 
-        self._mic.connect_frame(self._on_frame_ready)
-
         self._n_stim_fallbacks = 0
         self._active_handle = handle
 
@@ -1496,13 +1494,18 @@ class Controller:
                 handle.externally_cancelled = True
                 handle.cancel()
 
-        self._mic.connect_sequence_canceled(_on_runner_canceled)
-
-        mda_thread = self._mic.run_mda(
-            self._event_stream(stim_mode=stim_mode, handle=handle)
-        )
-
+        # Connect inside the try, so that the finally also disconnects when
+        # run_mda raises (e.g. another MDA is still running). psygnal allows
+        # duplicate connections: a callback left connected would get every
+        # frame twice in the next run.
+        mda_thread = None
         try:
+            self._mic.connect_frame(self._on_frame_ready)
+            self._mic.connect_sequence_canceled(_on_runner_canceled)
+            mda_thread = self._mic.run_mda(
+                self._event_stream(stim_mode=stim_mode, handle=handle)
+            )
+
             # Supervision only: the generator runs on the MDA thread. A
             # cancel is forwarded to the runner once so it interrupts a
             # min_start_time sleep the generator cannot reach; the
@@ -1517,10 +1520,19 @@ class Controller:
                 mda_thread.join(timeout=0.2)
         finally:
             self._event_queue = None
-            mda_thread.join()
+            if mda_thread is not None:
+                mda_thread.join()
             with contextlib.suppress(Exception):
                 self._mic.disconnect_sequence_canceled(_on_runner_canceled)
-            self._mic.disconnect_frame(self._on_frame_ready)
+            # Suppressed: connect_frame raises before it connects on the Qt
+            # signal backend, and a Qt disconnect raises for a callback that
+            # is not connected. That error would replace the clear one.
+            with contextlib.suppress(Exception):
+                self._mic.disconnect_frame(self._on_frame_ready)
+            # A timepoint that misses a frame (cancel, failed snap) stays in
+            # the buffer. It must not merge with the frames of a later run at
+            # the same (t, p).
+            self._frame_buffers.clear()
             s = handle.status()
             logger.info(
                 "MDA run finished: %d/%d events acquired, %d stim fallbacks",
