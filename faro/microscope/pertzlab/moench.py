@@ -6,6 +6,7 @@ import numpy as np
 from faro.microscope.pymmcore import PyMMCoreMicroscope
 from faro.core.data_structures import ImgType
 from faro.core.dmd import DMD
+from faro.core.qt import drain_posted_qt_events, pump_qt_events
 from faro.core._useq_compat import SLMImage
 from pymmcore_plus.mda._engine import MDAEngine
 from typing import Optional
@@ -36,44 +37,6 @@ def _set_c_numeric_locale():
                 break
             except locale.Error:
                 continue
-
-
-def _pump_qt_events() -> None:
-    """Process pending Qt events if a Qt app is running; no-op otherwise.
-
-    Used by ``calibrate_dmd(background=True)`` to keep napari responsive
-    while the calibration MDAs run on a worker thread.
-    """
-    try:
-        from qtpy.QtCore import QCoreApplication
-    except Exception:
-        return
-    app = QCoreApplication.instance()
-    if app is not None:
-        app.processEvents()
-
-
-def _drain_posted_qt_events() -> None:
-    """Deliver Qt events posted to the calling thread; no-op without Qt.
-
-    GUI handlers running on an acquisition thread (psygnal backend) can
-    create QObjects there, so queued Qt events accumulate on that thread
-    with no event loop to deliver them. Windows delivers the leftovers
-    during thread shutdown while holding the loader lock; blocking on the
-    GIL there deadlocks the process against a painting main thread.
-    Delivering the events here, where the GIL is taken normally, leaves
-    nothing for the shutdown path. DeferredDelete events need their own
-    pass because ``sendPostedEvents`` excludes them by default.
-    """
-    try:
-        from qtpy.QtCore import QCoreApplication, QEvent
-    except Exception:
-        return
-    if QCoreApplication.instance() is None:
-        return
-    with suppress(Exception):
-        QCoreApplication.sendPostedEvents()
-        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 class MoenchCMMCorePlus(pymmcore_plus.CMMCorePlus):
@@ -210,9 +173,12 @@ class MoenchCMMCorePlus(pymmcore_plus.CMMCorePlus):
         """Run the MDA on a thread that drains its posted Qt events before exiting.
 
         Mirrors ``CMMCorePlus.run_mda`` except that the acquisition thread
-        calls :func:`_drain_posted_qt_events` after the run, so no Qt events
-        are left for Windows thread shutdown (see the helper's docstring for
-        the deadlock this prevents).
+        calls :func:`~faro.core.qt.drain_posted_qt_events` after the run, so
+        no Qt events are left for Windows thread shutdown (see the helper's
+        docstring for the deadlock this prevents). faro's Controller goes
+        through ``PyMMCoreMicroscope.run_mda``, which drains as well; this
+        override covers MDAs started directly on the core, e.g. from the
+        napari-micromanager MDA widget.
         """
         if self.mda.is_running():
             raise ValueError(
@@ -225,7 +191,7 @@ class MoenchCMMCorePlus(pymmcore_plus.CMMCorePlus):
                     events, output=output, dimension_overrides=dimension_overrides
                 )
             finally:
-                _drain_posted_qt_events()
+                drain_posted_qt_events()
 
         th = threading.Thread(target=_run_and_drain)
         th.start()
@@ -898,11 +864,13 @@ class Moench(PyMMCoreMicroscope):
             except BaseException as exc:  # noqa: BLE001
                 box.append(exc)
             finally:
+                # the calibration MDAs ran on this thread
+                drain_posted_qt_events()
                 done.set()
 
         threading.Thread(target=_worker, name="DMDCalibration", daemon=True).start()
         while not done.wait(timeout=0.05):
-            _pump_qt_events()
+            pump_qt_events()
         if box:
             raise box[0]
 

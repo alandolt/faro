@@ -6,6 +6,7 @@ from faro.core.data_structures import (
     StimMode,
     WaitEvent,
 )
+from faro.core.qt import pump_qt_events
 from faro.core.run_status import RunHandle, RunStatus
 from faro.core.writers import (
     Writer,
@@ -1315,24 +1316,9 @@ class Controller:
 
         threading.Thread(target=_teardown, name="FaroFinishWorker", daemon=True).start()
         while not done.wait(timeout=0.05):
-            self._pump_qt_events()
+            pump_qt_events()
         if box:
             raise box[0]
-
-    @staticmethod
-    def _pump_qt_events() -> None:
-        """Process pending Qt events if a Qt app is running; no-op otherwise.
-
-        Used by finish_experiment (which blocks the calling/main thread by
-        design) to keep napari responsive while teardown runs on a worker.
-        """
-        try:
-            from qtpy.QtCore import QCoreApplication
-        except Exception:
-            return
-        app = QCoreApplication.instance()
-        if app is not None:
-            app.processEvents()
 
     def error_summary(self) -> Counter:
         """Number of background errors per (source, exception type).

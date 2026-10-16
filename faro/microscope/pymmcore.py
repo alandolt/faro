@@ -1,7 +1,9 @@
 import atexit
 import contextlib
+import threading
 import weakref
 
+from faro.core.qt import drain_posted_qt_events
 from faro.microscope.base import AbstractMicroscope
 
 
@@ -75,7 +77,28 @@ class PyMMCoreMicroscope(AbstractMicroscope):
     # ------------------------------------------------------------------
 
     def run_mda(self, event_iter):
-        return self.mmc.run_mda(event_iter)
+        """Run the MDA on a thread that drains its posted Qt events before exiting.
+
+        Like ``CMMCorePlus.run_mda``, but the acquisition thread calls
+        :func:`~faro.core.qt.drain_posted_qt_events` after the run. Under the
+        psygnal backend, GUI slots run on this thread and can leave Qt events
+        on it; on Windows these deadlock the process at thread exit (see the
+        helper's docstring).
+        """
+        if self.mmc.mda.is_running():
+            raise ValueError(
+                "Cannot start an MDA while the previous MDA is still running."
+            )
+
+        def _run_and_drain() -> None:
+            try:
+                self.mmc.mda.run(event_iter)
+            finally:
+                drain_posted_qt_events()
+
+        thread = threading.Thread(target=_run_and_drain)
+        thread.start()
+        return thread
 
     def connect_frame(self, callback):
         self._check_signal_backend()
