@@ -14,9 +14,11 @@ from __future__ import annotations
 import logging
 
 import numpy as np
+import pytest
 from useq import MDAEvent
 
 from faro.core.controller import Analyzer, Controller
+from faro.core.conversion import load_events_json, save_events_json
 from faro.core.data_structures import ImgType, RTMSequence, combine
 from faro.core.writers import TiffWriter
 from faro.feature_extraction.base_ref import FeatureExtractorRef
@@ -92,30 +94,43 @@ class TestReferenceChannelsMissing:
             analyzer.shutdown(wait=False)
 
 
+def _ref_phase_events():
+    """Two imaging timepoints, then the README ref phase."""
+    experiment = RTMSequence(
+        time_plan={"interval": 0, "loops": 2},
+        stage_positions=[(0, 0, 0)],
+        channels=[{"config": "phase-contrast", "exposure": 10}],
+    )
+    ref_phase = RTMSequence(
+        time_plan={"interval": 0, "loops": 1},
+        stage_positions=[(0, 0, 0)],
+        channels=[{"config": "phase-contrast", "exposure": 10}],
+        rtm_metadata={"img_type": ImgType.IMG_REF},
+    )
+    return combine(experiment, ref_phase, axis="t")
+
+
 class TestRefPhase:
-    def test_ref_phase_is_measured(self, tmp_dir, caplog):
+    @pytest.mark.parametrize("with_writer", [False, True], ids=["no-writer", "writer"])
+    def test_ref_phase_is_measured(self, tmp_dir, caplog, with_writer):
         """The README's ref phase, chained with combine(), gets ref features."""
         pipeline = make_pipeline(tmp_dir, tracker=TrackerTrackpy(search_range=50))
         spy = SpyRefFE()
         pipeline.feature_extractor_ref = spy
-        experiment = RTMSequence(
-            time_plan={"interval": 0, "loops": 2},
-            stage_positions=[(0, 0, 0)],
-            channels=[{"config": "phase-contrast", "exposure": 10}],
-        )
-        ref_phase = RTMSequence(
-            time_plan={"interval": 0, "loops": 1},
-            stage_positions=[(0, 0, 0)],
-            channels=[{"config": "phase-contrast", "exposure": 10}],
-            rtm_metadata={"img_type": ImgType.IMG_REF},
-        )
-        events = combine(experiment, ref_phase, axis="t")
-        ctrl = Controller(FakeMicroscope(CircleScene()), pipeline)
+        writer = TiffWriter(tmp_dir) if with_writer else None
+        ctrl = Controller(FakeMicroscope(CircleScene()), pipeline, writer=writer)
         with caplog.at_level(logging.WARNING, logger="faro.core.pipeline"):
             try:
-                ctrl.run_experiment(events, validate=False).wait()
+                ctrl.run_experiment(_ref_phase_events(), validate=False).wait()
             finally:
                 ctrl.finish_experiment()
         assert ctrl.background_errors == []
         assert spy.calls == 1
         assert "has no reference channels" not in caplog.text
+
+    def test_events_json_keeps_img_type(self, tmp_dir):
+        """events.json stores img_type by name and gives the enum back."""
+        save_events_json(tmp_dir, _ref_phase_events())
+        events = load_events_json(tmp_dir)
+        assert events[-1].metadata["img_type"] is ImgType.IMG_REF
+        assert "img_type" not in events[0].metadata
