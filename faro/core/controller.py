@@ -31,7 +31,7 @@ from typing import Iterator, Literal
 from faro.core._useq_compat import SLMImage
 from psygnal import Signal
 from useq import MDAEvent
-from queue import Queue, Empty as QueueEmpty
+from queue import Queue, Empty as QueueEmpty, Full as QueueFull
 import numpy as np
 import time
 import tifffile
@@ -643,7 +643,7 @@ class Analyzer:
         # Optionally print stats periodically for live debugging
         try:
             # Put in storage queue (high priority)
-            # Non-blocking: if queue full, just skip (images before it will be stored)
+            # Non-blocking: if the queue is full, this frame is lost (see below)
             self._storage_queue.put_nowait((img, event, metadata, "raw"))
             if self.debug:
                 self._debug_counter += 1
@@ -652,10 +652,27 @@ class Analyzer:
                     print(
                         f"[Analyzer] Stats {stats} (storage_q={self._storage_queue.qsize()}, deferred_q={self._deferred_queue.qsize()})"
                     )
-        except RuntimeError:
-            # Queue full - image skipped (but previous images are being stored)
-            # This is acceptable as storage is non-blocking
-            pass
+        except QueueFull:
+            # The storage worker is max_queue_size frames behind, so this frame
+            # is lost. Record it (raise-then-catch so the traceback has the
+            # message) and release the tracks dispenser, as for a full
+            # deferred queue in _try_submit_pipeline, so the next frame of
+            # this FOV does not wait for it.
+            try:
+                raise RuntimeError(
+                    f"Storage queue full ({self._storage_queue.maxsize} frames): "
+                    f"frame t={event.index.get('t', 0)} "
+                    f"fov={metadata.get('fov', 0)} is lost"
+                )
+            except RuntimeError as err:
+                self._record_background_error("storage", err)
+            if (
+                self.pipeline is not None
+                and self.pipeline.segmentators is not None
+                and metadata.get("img_type") != ImgType.IMG_STIM
+            ):
+                fov_state = self.get_fov_state(metadata.get("fov", 0))
+                fov_state.tracks_queue.skip_frame(event.index.get("t", 0))
 
         return {"result": "STOP"}
 

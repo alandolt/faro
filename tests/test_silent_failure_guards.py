@@ -8,17 +8,26 @@ as new attributes that the Controller never read.
 from __future__ import annotations
 
 import os
+import threading
 import time
 
+import numpy as np
 import pytest
+from useq import MDAEvent
 
 import faro.core.controller as controller_module
 from faro.core.controller import KEEP_ERRORS_PER_KIND, Analyzer, Controller
+from faro.core.data_structures import ImgType
 from faro.core.writers import TiffWriter
 from faro.tracking.trackpy import TrackerTrackpy
 
 from tests.fake_microscope import FakeMicroscope
-from tests.fixtures import CircleScene, make_events, make_pipeline
+from tests.fixtures import (
+    CircleScene,
+    make_circle_image,
+    make_events,
+    make_pipeline,
+)
 
 
 class TestControllerAttributes:
@@ -197,3 +206,56 @@ class TestFrameCallbacks:
             assert ctrl._frame_buffers == {}
         finally:
             ctrl.finish_experiment()
+
+
+class TestStorageQueueFull:
+    def test_lost_frame_is_recorded_and_released(self, tmp_dir, monkeypatch):
+        """A frame that does not fit in the storage queue is a background error.
+
+        Its tracks dispenser entry is skipped, so the next frame of the FOV
+        does not wait for it.
+        """
+        entered, release = threading.Event(), threading.Event()
+        store = Analyzer._do_store
+
+        def blocked_store(self, *args, **kwargs):
+            entered.set()
+            release.wait(timeout=10)
+            store(self, *args, **kwargs)
+
+        monkeypatch.setattr(Analyzer, "_do_store", blocked_store)
+        pipeline = make_pipeline(tmp_dir, tracker=TrackerTrackpy(search_range=50))
+        analyzer = Analyzer(pipeline, max_queue_size=1, writer=TiffWriter(tmp_dir))
+        img = make_circle_image()[np.newaxis]
+        events = [
+            MDAEvent(
+                index={"t": t, "p": 0},
+                metadata={
+                    "fov": 0,
+                    "timestep": t,
+                    "fname": f"000_{t:05d}",
+                    "img_type": ImgType.IMG_RAW,
+                    "channels": ["phase-contrast"],
+                    "ref_channels": [],
+                    "stim": False,
+                },
+            )
+            for t in range(3)
+        ]
+        try:
+            analyzer.run(img, events[0])
+            assert entered.wait(timeout=10)  # the worker holds frame 0
+            analyzer.run(img, events[1])  # fills the queue
+            analyzer.run(img, events[2])  # does not fit
+        finally:
+            release.set()
+            analyzer.shutdown(wait=True)
+
+        assert [e.source for e in analyzer.background_errors] == ["storage"]
+        assert "t=2" in analyzer.background_errors[0].message
+        assert sorted(os.listdir(os.path.join(tmp_dir, "raw"))) == [
+            "000_00000.tiff",
+            "000_00001.tiff",
+        ]
+        tracks = analyzer.get_fov_state(0).tracks_queue
+        assert tracks.wait_for_frame(2, timeout=1) is None  # skipped
