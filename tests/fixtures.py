@@ -196,11 +196,17 @@ def make_pipeline(
 
 
 def assert_no_background_errors(ctrl: Controller) -> None:
-    """Fail with a readable summary if the analyzer recorded any errors."""
-    if ctrl.background_errors:
-        summary = "\n".join(
-            f"  [{e.source}] {e.exc_type}: {e.message}" for e in ctrl.background_errors
-        )
+    """Fail with a readable summary if the analyzer recorded any errors.
+
+    The Controller collects the Analyzer's errors in finish_experiment.
+    run_and_wait shuts the Analyzer down without finish_experiment, so the
+    errors of an Analyzer that is still attached are checked too.
+    """
+    errors = list(ctrl.background_errors)
+    if ctrl._analyzer is not None:
+        errors += ctrl._analyzer.background_errors
+    if errors:
+        summary = "\n".join(f"  [{e.source}] {e.exc_type}: {e.message}" for e in errors)
         raise AssertionError(f"Background errors during acquisition:\n{summary}")
 
 

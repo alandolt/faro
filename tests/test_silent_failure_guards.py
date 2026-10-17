@@ -24,9 +24,11 @@ from faro.tracking.trackpy import TrackerTrackpy
 from tests.fake_microscope import FakeMicroscope
 from tests.fixtures import (
     CircleScene,
+    assert_no_background_errors,
     make_circle_image,
     make_events,
     make_pipeline,
+    run_and_wait,
 )
 
 
@@ -259,3 +261,19 @@ class TestStorageQueueFull:
         ]
         tracks = analyzer.get_fov_state(0).tracks_queue
         assert tracks.wait_for_frame(2, timeout=1) is None  # skipped
+
+
+class TestAssertNoBackgroundErrors:
+    def test_sees_the_errors_after_run_and_wait(self, tmp_dir, monkeypatch):
+        """run_and_wait does not call finish_experiment, so the Controller
+        has not collected the Analyzer's errors yet."""
+        pipeline = make_pipeline(tmp_dir, tracker=TrackerTrackpy(search_range=50))
+
+        def broken_run(*args, **kwargs):
+            raise ValueError("pipeline bug")
+
+        monkeypatch.setattr(pipeline, "run", broken_run)
+        ctrl = Controller(FakeMicroscope(CircleScene()), pipeline)
+        run_and_wait(ctrl, make_events(2))
+        with pytest.raises(AssertionError, match="pipeline bug"):
+            assert_no_background_errors(ctrl)
