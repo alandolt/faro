@@ -49,6 +49,27 @@ KEEP_ERRORS_PER_KIND = 50
 BackgroundErrorSource = Literal["storage", "deferred", "pipeline", "stim_mask"]
 
 
+def _join_ref_frame(ref: np.ndarray, n_ref: int, read_imaging) -> np.ndarray:
+    """Rebuild a stored reference frame as ``[imaging | ref]``.
+
+    ``Analyzer._do_store`` writes the imaging channels of a reference frame
+    as raw and its ``n_ref`` reference channels to ``ref/``. It writes the
+    whole frame to ``ref/`` when the frame has no separate reference channels
+    (a ref phase) or when the stack lacks them. Data stored before 2026-05
+    also has the whole stack in ``ref/``. A ``ref`` image with more than
+    ``n_ref`` channels is such a whole frame and is returned as it is.
+    Otherwise ``read_imaging()`` gives the imaging channels.
+    """
+    if ref.ndim == 2:
+        ref = ref[np.newaxis]
+    if ref.shape[0] > n_ref:
+        return ref
+    img = read_imaging()
+    if img.ndim == 2:
+        img = img[np.newaxis]
+    return np.concatenate([img, ref], axis=0)
+
+
 @dataclass(frozen=True)
 class BackgroundError:
     """A background-thread exception recorded for later inspection."""
@@ -508,19 +529,16 @@ class Analyzer:
 
         A reference frame is stored in two parts (see ``_do_store``): the
         imaging channels as "raw" and the reference channels as "ref". The
-        pipeline expects both in one stack, imaging channels first.
+        pipeline expects both in one stack, imaging channels first. A ref
+        phase is stored whole as "ref" (see ``_join_ref_frame``).
         """
-        img = self.writer.read_raw(metadata)
-        if metadata.get("img_type") != ImgType.IMG_REF or not metadata.get(
-            "ref_channels"
-        ):
-            return img
-        ref = self.writer.read_ref(metadata)
-        if img.ndim == 2:
-            img = img[np.newaxis]
-        if ref.ndim == 2:
-            ref = ref[np.newaxis]
-        return np.concatenate([img, ref], axis=0)
+        if metadata.get("img_type") != ImgType.IMG_REF:
+            return self.writer.read_raw(metadata)
+        return _join_ref_frame(
+            self.writer.read_ref(metadata),
+            len(metadata.get("ref_channels", ())),
+            lambda: self.writer.read_raw(metadata),
+        )
 
     def _deferred_worker(self):
         """Worker thread that processes deferred images when capacity becomes available.
@@ -2002,23 +2020,20 @@ class ControllerSimulated(Controller):
             t_idx = event.index.get("t", 0)
             p_idx = event.index.get("p", 0)
 
-            if img_type == ImgType.IMG_RAW and self._zarr_reader is not None:
-                # Strip stim-readout channels (if any) so re-analysis sees the
-                # same imaging-only frame the live pipeline received.
-                img_loaded = self._zarr_reader.read(
-                    t_idx, p_idx, n_imaging_channels=len(meta.get("channels", ()))
+            n_channels = len(meta.get("channels", ()))
+            if img_type == ImgType.IMG_RAW:
+                img_loaded = self._read_imaging(fname, t_idx, p_idx, n_channels)
+            elif img_type == ImgType.IMG_REF:
+                # Reference images are always TIFFs in ref/
+                img_loaded = _join_ref_frame(
+                    tifffile.imread(
+                        os.path.join(self._project_path, "ref", fname + ".tiff")
+                    ),
+                    len(meta.get("ref_channels", ())),
+                    lambda: self._read_imaging(fname, t_idx, p_idx, n_channels),
                 )
             else:
-                # TIFF fallback (raw/) or always for ref images
-                folder = {
-                    ImgType.IMG_RAW: "raw",
-                    ImgType.IMG_REF: "ref",
-                }.get(img_type)
-                if folder is None:
-                    raise ValueError(f"Unknown image type: {img_type}")
-                img_loaded = tifffile.imread(
-                    os.path.join(self._project_path, folder, fname + ".tiff")
-                )
+                raise ValueError(f"Unknown image type: {img_type}")
             self._analyzer.run(img_loaded, event)
 
             try:
@@ -2027,3 +2042,13 @@ class ControllerSimulated(Controller):
                 )
             except Exception:
                 pass
+
+    def _read_imaging(
+        self, fname: str, t_idx: int, p_idx: int, n_channels: int
+    ) -> np.ndarray:
+        """Imaging channels of a stored frame, from the zarr store or raw/."""
+        if self._zarr_reader is not None:
+            # Strip stim-readout channels (if any) so re-analysis sees the
+            # same imaging-only frame the live pipeline received.
+            return self._zarr_reader.read(t_idx, p_idx, n_imaging_channels=n_channels)
+        return tifffile.imread(os.path.join(self._project_path, "raw", fname + ".tiff"))
