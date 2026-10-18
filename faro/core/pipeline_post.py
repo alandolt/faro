@@ -15,6 +15,7 @@ import faro.segmentation.base as base_segmentation
 import faro.stimulation.base as base_stimulation
 import faro.tracking.base as abstract_tracker
 import faro.feature_extraction.base as abstract_fe
+from faro.core.controller import _join_ref_frame
 from faro.core.data_structures import FovState, ImgType, SegmentationMethod
 from faro.core.utils import create_folders
 from faro.core.pipeline import (
@@ -131,6 +132,17 @@ class ImageProcessingPipeline_postExperiment:
     def _read_zarr_raw(self, timestep: int, fov: int) -> np.ndarray:
         """Read a raw frame from the zarr store, returning (c, y, x) array."""
         return self._zarr_reader.read(timestep, fov)
+
+    def _read_imaging(
+        self, fname: str, timestep: int, fov: int, n_channels: int
+    ) -> np.ndarray:
+        """Imaging channels of a stored frame, from the zarr store or raw/."""
+        if self._use_zarr:
+            # Strip stim-readout channels, as ControllerSimulated does.
+            return self._zarr_reader.read(timestep, fov, n_imaging_channels=n_channels)
+        return tifffile.imread(
+            os.path.join(self.img_storage_path, "raw", fname + ".tiff")
+        )
 
     def _read_zarr_label(
         self, label_name: str, timestep: int, fov: int
@@ -347,15 +359,33 @@ class ImageProcessingPipeline_postExperiment:
 
         for index, row in df.iterrows():
             t = int(row["timestep"])
-            # A ref phase (IMG_REF without ref_channels) is stored whole in
-            # ref/, not as raw (see Analyzer._do_store).
             ref_channels = row.get("ref_channels")
             n_ref = len(ref_channels) if isinstance(ref_channels, (list, tuple)) else 0
             ref_phase = row.get("img_type") == ImgType.IMG_REF and n_ref == 0
-            if ref_phase:
-                img = tifffile.imread(
-                    os.path.join(self.img_storage_path, "ref", row["fname"] + ".tiff")
+            # Ref images are TIFFs, also with a zarr store
+            ref_tiff = os.path.join(
+                self.img_storage_path, "ref", row["fname"] + ".tiff"
+            )
+            img_ref = None
+            if ref_phase or (n_ref > 0 and os.path.exists(ref_tiff)):
+                # A reference frame. _join_ref_frame rebuilds [imaging | ref]
+                # for each storage layout: the imaging channels from raw and
+                # the reference channels from ref/, or the whole frame from
+                # ref/ (a ref phase, or data stored before 2026-05, which has
+                # no raw frame here). Split it as the live pipeline does.
+                n_channels = len(row["channels"])
+                img = _join_ref_frame(
+                    tifffile.imread(ref_tiff),
+                    n_ref,
+                    lambda: self._read_imaging(
+                        row["fname"], t, int(fov_id), n_channels
+                    ),
                 )
+                if n_ref == 0:
+                    img_ref = img
+                elif img.shape[0] > n_channels:
+                    img_ref = img[n_channels:]
+                    img = img[:n_channels]
             elif self._use_zarr:
                 img = self._read_zarr_raw(t, int(fov_id))
             else:
@@ -421,9 +451,6 @@ class ImageProcessingPipeline_postExperiment:
                     or n_ref > 0
                     or metadata.get("ref", False)
                 )
-                ref_tiff = os.path.join(
-                    self.img_storage_path, "ref", row["fname"] + ".tiff"
-                )
                 if is_ref_frame and not os.path.exists(ref_tiff):
                     # e.g. ref/ was not copied with the data: keep the other
                     # results of this frame, only without ref features.
@@ -437,21 +464,27 @@ class ImageProcessingPipeline_postExperiment:
                     and not df_tracked.empty
                     and "particle" in df_tracked.columns
                 ):
-                    print(
-                        f'Adding ref features for timestep {metadata["timestep"]}, fov {fov_id}'
-                    )
-                    # Ref images are TIFFs, also with a zarr store
-                    img_ref = tifffile.imread(ref_tiff)
-                    if n_ref > 0 and img_ref.ndim == 3 and img_ref.shape[0] > n_ref:
-                        # Data stored before 2026-05 has the whole
-                        # [imaging | ref] stack in ref/
-                        img_ref = img_ref[-n_ref:]
-                    df_tracked = self.feature_extractor_ref.extract_features(
-                        segmentation_results,
-                        img_ref,
-                        df_tracked,
-                        metadata,
-                    )
+                    if n_ref == 0 and not ref_phase:
+                        # A legacy row with ref=True: img is from raw
+                        img_ref = tifffile.imread(ref_tiff)
+                    if img_ref is None:
+                        # as in the live pipeline: ref_channels are set, but
+                        # the stored frame does not have them
+                        print(
+                            f"Reference image {ref_tiff} has no reference channels: "
+                            f'no ref features for timestep {metadata["timestep"]}, '
+                            f"fov {fov_id}"
+                        )
+                    else:
+                        print(
+                            f'Adding ref features for timestep {metadata["timestep"]}, fov {fov_id}'
+                        )
+                        df_tracked = self.feature_extractor_ref.extract_features(
+                            segmentation_results,
+                            img_ref,
+                            df_tracked,
+                            metadata,
+                        )
 
             if masks_for_fe is not None:
                 for mask_fe in masks_for_fe:

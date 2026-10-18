@@ -18,11 +18,16 @@ import os
 import shutil
 
 import numpy as np
+import pandas as pd
 import pytest
 from useq import MDAEvent
 
 from faro.core.controller import Analyzer, Controller, ControllerSimulated
-from faro.core.conversion import load_events_json, save_events_json
+from faro.core.conversion import (
+    convert_tiff_to_omezarr,
+    load_events_json,
+    save_events_json,
+)
 from faro.core.data_structures import (
     Channel,
     ImgType,
@@ -79,8 +84,8 @@ class RefScene(CircleScene):
         return super().render(event)
 
 
-def _inline_ref_events():
-    """Imaging at t=0 and t=1, and one reference channel at t=1."""
+def _inline_ref_events(n_timepoints=2):
+    """Imaging at each timepoint, and one reference channel at t=1."""
     ref = (Channel(config="stim-405", exposure=10),)
     return [
         RTMEvent(
@@ -89,7 +94,7 @@ def _inline_ref_events():
             ref_channels=ref if t == 1 else (),
             metadata={},
         )
-        for t in range(2)
+        for t in range(n_timepoints)
     ]
 
 
@@ -315,18 +320,33 @@ class TestReanalysis:
         _reanalyse(live_path, out_path, writer_cls, ref_fe=RefFE("labels"))
         assert os.listdir(os.path.join(out_path, "tracks")) == ["0_latest.parquet"]
 
-    def test_ref_holds_the_whole_stack_of_old_data(self, tmp_dir):
-        """Before 2026-05, ref/ held the whole [imaging | ref] stack."""
+    @pytest.mark.parametrize("source", ["tiff", "zarr"])
+    @pytest.mark.parametrize("n_timepoints", [2, 3], ids=["ref-last", "ref-middle"])
+    def test_ref_holds_the_whole_stack_of_old_data(self, tmp_dir, source, n_timepoints):
+        """Before 2026-05, ref/ held the whole [imaging | ref] stack, and raw
+        had no frame for it. A zarr store converted from such data has an
+        empty frame there, or no frame when it is the last timepoint.
+        """
         old_path = os.path.join(tmp_dir, "old")
         circle = make_circle_image()
         writer = TiffWriter(old_path)
-        for t in range(2):
-            writer.write(circle[np.newaxis], {"fname": f"000_{t:05d}"}, "raw")
+        for t in range(n_timepoints):
+            if t != 1:
+                writer.write(circle[np.newaxis], {"fname": f"000_{t:05d}"}, "raw")
         stack = np.stack([circle, np.full_like(circle, REF_VALUE)])
         writer.write(stack, {"fname": "000_00001"}, "ref")
-        save_events_json(old_path, _inline_ref_events())
+        if source == "zarr":
+            converted_path = os.path.join(tmp_dir, "converted")
+            convert_tiff_to_omezarr(old_path, converted_path, verbose=False)
+            old_path = converted_path
+        save_events_json(old_path, _inline_ref_events(n_timepoints))
 
-        spy = _reanalyse(old_path, os.path.join(tmp_dir, "out"), TiffWriter)
+        out_path = os.path.join(tmp_dir, "out")
+        spy = _reanalyse(old_path, out_path, TiffWriter)
         assert spy.calls == 1
         assert spy.images[0].shape == (1, H, W)  # the reference channel only
         assert np.all(spy.images[0] == REF_VALUE)
+        # t=1 is segmented on the imaging channel from ref/
+        tracks = pd.read_parquet(os.path.join(out_path, "tracks", "0_latest.parquet"))
+        n_cells = tracks.groupby("timestep").size()
+        assert n_cells.get(1, 0) == n_cells[0] > 0
