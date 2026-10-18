@@ -431,7 +431,12 @@ class ImageProcessingPipeline_postExperiment:
                         f"No reference image {ref_tiff}: no ref features for "
                         f'timestep {metadata["timestep"]}, fov {fov_id}'
                     )
-                elif is_ref_frame:
+                elif (
+                    is_ref_frame
+                    # as in the live pipeline: no tracked cells, no ref features
+                    and not df_tracked.empty
+                    and "particle" in df_tracked.columns
+                ):
                     print(
                         f'Adding ref features for timestep {metadata["timestep"]}, fov {fov_id}'
                     )

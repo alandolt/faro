@@ -34,6 +34,7 @@ from faro.core.data_structures import (
 from faro.core.pipeline_post import ImageProcessingPipeline_postExperiment
 from faro.core.writers import OmeZarrWriter, TiffWriter
 from faro.feature_extraction.base_ref import FeatureExtractorRef
+from faro.feature_extraction.ref import RefFE
 from faro.feature_extraction.simple import SimpleFE
 from faro.segmentation.base import OtsuSegmentator
 from faro.tracking.trackpy import TrackerTrackpy
@@ -249,9 +250,12 @@ def _run_live(path, writer_cls, events, scene):
         ctrl.finish_experiment()
 
 
-def _reanalyse(live_path, out_path, writer_cls):
-    """Reanalyse a stored run as the reanalysis template does; return the spy."""
-    spy = SpyRefFE()
+def _reanalyse(live_path, out_path, writer_cls, ref_fe=None):
+    """Reanalyse a stored run as the reanalysis template does; return the ref FE.
+
+    The ref FE is ref_fe, or a SpyRefFE if ref_fe is None.
+    """
+    spy = SpyRefFE() if ref_fe is None else ref_fe
     post = ImageProcessingPipeline_postExperiment(
         img_storage_path=live_path,
         out_path=out_path,
@@ -298,6 +302,18 @@ class TestReanalysis:
             "000_00000.tiff",
             "000_00001.tiff",
         ]
+
+    @pytest.mark.parametrize("writer_cls", [TiffWriter, OmeZarrWriter])
+    @pytest.mark.parametrize(
+        "events", [_inline_ref_events, _ref_phase_events], ids=["inline", "phase"]
+    )
+    def test_empty_fov_keeps_its_tracks(self, tmp_dir, events, writer_cls):
+        """A FOV without cells gets no ref features, as live, but its tracks."""
+        live_path = os.path.join(tmp_dir, "live")
+        _run_live(live_path, writer_cls, events(), CircleScene(blank_frames={0, 1, 2}))
+        out_path = os.path.join(tmp_dir, "out")
+        _reanalyse(live_path, out_path, writer_cls, ref_fe=RefFE("labels"))
+        assert os.listdir(os.path.join(out_path, "tracks")) == ["0_latest.parquet"]
 
     def test_ref_holds_the_whole_stack_of_old_data(self, tmp_dir):
         """Before 2026-05, ref/ held the whole [imaging | ref] stack."""
