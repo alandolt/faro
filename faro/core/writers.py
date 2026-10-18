@@ -235,8 +235,9 @@ class OmeZarrRawReader:
 
     - direct multi-position — root ``"0"`` array, axes ``(t, p, c, y, x)``
     - single-position stream — root ``"0"`` array, axes ``(t, c, y, x)``
-    - plate — one array per well at ``"<well>/0/0"``, axes ``(t, c, y, x)``,
-      ordered by ``(rowIndex, columnIndex)`` to match FOV index.
+    - plate — one array per well at ``"<well>/0/0"``, axes ``(t, c, y, x)``
+      (``(t, y, x)`` for one channel), ordered by ``(rowIndex, columnIndex)``
+      to match FOV index.
 
     Opens the store read-only. Concurrent with a live writer this is safe for
     already-written frames; the deferred path only ever reloads frames older
@@ -273,6 +274,8 @@ class OmeZarrRawReader:
         """
         if self._is_plate:
             frame = np.asarray(self._root[self._well_arrays[fov]][timestep])
+            if frame.ndim == 2:  # one channel: the well array has no c axis
+                frame = frame[np.newaxis]
         else:
             has_p = "p" in self._axes
             has_c = "c" in self._axes

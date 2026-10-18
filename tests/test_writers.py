@@ -347,6 +347,35 @@ class TestOmeZarrRawReader:
                 assert got.shape == (len(IMG_CHANNELS), IMG_H, IMG_W)
                 np.testing.assert_array_equal(got, _raw(t, p))
 
+    @pytest.mark.parametrize(
+        "cls,n_pos",
+        [
+            (OmeZarrWriter, 1),
+            (OmeZarrWriter, 3),
+            (OmeZarrWriterPlate, 3),
+        ],
+    )
+    def test_single_channel_frame_has_a_channel_axis(self, cls, n_pos, tmp_dir):
+        """With one channel and no stim images, a frame is still (c, y, x)."""
+        writer = cls(tmp_dir, n_timepoints=N_T)
+        writer.init_stream(
+            position_names=[f"Pos{i}" for i in range(n_pos)],
+            channel_names=IMG_CHANNELS[:1],
+            image_height=IMG_H,
+            image_width=IMG_W,
+            n_timepoints=N_T,
+        )
+        for t in range(N_T):
+            for p in range(n_pos):
+                writer.write(_raw(t, p, n_channels=1), _meta(t, p), "raw")
+        writer.close()
+        reader = OmeZarrRawReader(str(Path(tmp_dir) / ZARR_DIRNAME))
+        for t in range(N_T):
+            for p in range(n_pos):
+                got = reader.read(t, p)
+                assert got.shape == (1, IMG_H, IMG_W)
+                np.testing.assert_array_equal(got, _raw(t, p, n_channels=1))
+
 
 # ===========================================================================
 # OmeZarrWriter: stim routing
