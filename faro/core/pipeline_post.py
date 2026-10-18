@@ -337,7 +337,17 @@ class ImageProcessingPipeline_postExperiment:
 
         for index, row in df.iterrows():
             t = int(row["timestep"])
-            if self._use_zarr:
+            # A ref phase (IMG_REF without ref_channels) is stored whole in
+            # ref/, not as raw (see Analyzer._do_store).
+            ref_channels = row.get("ref_channels")
+            ref_phase = row.get("img_type") == ImgType.IMG_REF and not (
+                isinstance(ref_channels, (list, tuple)) and len(ref_channels) > 0
+            )
+            if ref_phase:
+                img = tifffile.imread(
+                    os.path.join(self.img_storage_path, "ref", row["fname"] + ".tiff")
+                )
+            elif self._use_zarr:
                 img = self._read_zarr_raw(t, int(fov_id))
             else:
                 img = tifffile.imread(

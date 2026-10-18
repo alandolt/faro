@@ -3,7 +3,8 @@
 A reference frame is stored in two parts: its imaging channels as "raw" and
 its reference channels as "ref". When the pipeline is overloaded, a frame is
 reloaded from storage later; the reload must give the pipeline both parts.
-ControllerSimulated replays stored frames and must do the same.
+ControllerSimulated replays stored frames and must do the same, and so must
+the reanalysis (ImageProcessingPipeline_postExperiment).
 
 A ref phase (``rtm_metadata={"img_type": ImgType.IMG_REF}`` without
 ``ref_channels``, see README) has no separate reference channels: its imaging
@@ -21,9 +22,19 @@ from useq import MDAEvent
 
 from faro.core.controller import Analyzer, Controller, ControllerSimulated
 from faro.core.conversion import load_events_json, save_events_json
-from faro.core.data_structures import Channel, ImgType, RTMEvent, RTMSequence, combine
+from faro.core.data_structures import (
+    Channel,
+    ImgType,
+    RTMEvent,
+    RTMSequence,
+    SegmentationMethod,
+    combine,
+)
+from faro.core.pipeline_post import ImageProcessingPipeline_postExperiment
 from faro.core.writers import OmeZarrWriter, TiffWriter
 from faro.feature_extraction.base_ref import FeatureExtractorRef
+from faro.feature_extraction.simple import SimpleFE
+from faro.segmentation.base import OtsuSegmentator
 from faro.tracking.trackpy import TrackerTrackpy
 
 from tests.fake_microscope import FakeMicroscope
@@ -225,3 +236,34 @@ class TestReplay:
         spy = _replay(old_path, os.path.join(tmp_dir, "replay"))
         assert spy.calls == 1
         assert np.all(spy.images[0] == REF_VALUE)
+
+
+class TestReanalysis:
+    @pytest.mark.parametrize("writer_cls", [TiffWriter, OmeZarrWriter])
+    def test_ref_phase_is_measured(self, tmp_dir, writer_cls):
+        """A ref phase frame is read from ref/, where the live run stored it."""
+        live_path = os.path.join(tmp_dir, "live")
+        pipeline = make_pipeline(live_path, tracker=TrackerTrackpy(search_range=50))
+        ctrl = Controller(
+            FakeMicroscope(CircleScene()), pipeline, writer=writer_cls(live_path)
+        )
+        try:
+            ctrl.run_experiment(_ref_phase_events(), validate=False).wait()
+        finally:
+            ctrl.finish_experiment()
+
+        out_path = os.path.join(tmp_dir, "reanalysis")
+        spy = SpyRefFE()
+        post = ImageProcessingPipeline_postExperiment(
+            img_storage_path=live_path,
+            out_path=out_path,
+            events=load_events_json(live_path),
+            segmentators=[SegmentationMethod("labels", OtsuSegmentator(), 0, False)],
+            feature_extractor=SimpleFE("labels"),
+            tracker=TrackerTrackpy(search_range=50),
+            feature_extractor_ref=spy,
+            n_jobs=1,  # n_jobs > 1 only prints the error of a FOV
+            writer=writer_cls(out_path),
+        )
+        post.run()
+        assert spy.calls == 1
