@@ -84,6 +84,36 @@ napari console, so e.g. `mic.calibrate_dmd(CyanStim)` or
 `mic.dmd.affine = np.load(...)` can be run there. See
 [faro/napari_launcher.py](faro/napari_launcher.py).
 
+### Lab widgets
+
+With the `pertzlab-widgets` [extra](#extras), pymmcore-widgets comes from the
+[pertzlab branch](https://github.com/pertzlab/pymmcore-widgets/tree/pertzlab),
+and `faro-napari` adds two buttons to the plugin's toolbar:
+
+* **Stage Map**: a live map of the XY stage with a well plate overlay and the
+  MDA positions; a double-click moves the stage there. It opens with the MDA
+  widget docked below it, in the same column.
+* **Continuous Focus**: turns the hardware autofocus (e.g. PFS) on and off, and
+  shows whether it is locked in focus.
+
+`uv run` syncs the environment to the extras on its command line before it
+runs. So give the extras on each run, together with the pymmcore extra for the
+scope's Micro-Manager (`api74` for Jungfrau, `api75` for Moench):
+
+```bash
+uv run --extra api74 --extra pertzlab-widgets faro-napari jungfrau
+```
+
+Or sync once, then run without a sync:
+
+```bash
+uv sync --extra api74 --extra pertzlab-widgets
+uv run --no-sync faro-napari jungfrau
+```
+
+A `uv run` or `uv sync` without these extras puts back pymmcore-widgets from
+PyPI (no lab widgets) and the default pymmcore.
+
 ## Pipeline
 
 The pipeline is modular, each component is independent and can be swapped or set to `None`.
@@ -705,13 +735,14 @@ The second line opens the [example notebook](examples/live_experiment.ipynb) in 
 
 ### Extras
 
-Optional dependency groups are available for segmentation backends and testing:
+Optional dependency groups are available for segmentation backends, widget builds and testing:
 
 | Extra | Packages | Use case |
 |-------|----------|----------|
 | `cellpose` | cellpose, torch | Cellpose segmentation |
 | `stardist` | stardist, tensorflow, csbdeep | StarDist segmentation |
 | `convpaint` | napari-convpaint, scipy | ConvPaint segmentation |
+| `pertzlab-widgets` | pymmcore-widgets from the [pertzlab branch](https://github.com/pertzlab/pymmcore-widgets/tree/pertzlab) | Lab widgets (stage map, continuous focus) and fixes. `faro-napari` adds toolbar buttons for them. |
 | `test` | pytest, nbclient, motile | Run the test suite, including the notebook tests. |
 
 Install one or more extras with `uv sync`:
@@ -720,7 +751,10 @@ Install one or more extras with `uv sync`:
 uv sync --extra cellpose
 uv sync --extra cellpose --extra stardist
 uv sync --extra test
+uv sync --extra pertzlab-widgets
 ```
+
+Without `pertzlab-widgets`, pymmcore-widgets comes from PyPI and `faro-napari` runs without the lab widgets. The extra works only with uv: pip ignores `[tool.uv.sources]` and installs the PyPI release.
 
 Alternatively, with pip (installs the package with all its dependencies):
 

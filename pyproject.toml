@@ -88,6 +88,20 @@ api75 = [
     "pymmcore==12.2.2.75.0"
 ]
 
+# pymmcore-widgets from the pertzlab integration branch instead of PyPI:
+# upstream main + the lab's stage map, continuous-focus widget, tweaks and
+# in-flight upstream fixes (see PERTZLAB.md on that branch). faro-napari adds
+# toolbar buttons for its widgets.
+pertzlab-widgets = [
+    "pymmcore-widgets",
+]
+
+[dependency-groups]
+# Empty and never installed. It is only the second side of the
+# pertzlab-widgets conflict in [tool.uv]: uv needs two sides to resolve
+# pymmcore-widgets from PyPI without the extra and from git with it.
+pypi-widgets = []
+
 
 [[tool.uv.index]]
 # CUDA 13.0 wheels. Requires NVIDIA driver >= 580.65.
@@ -101,15 +115,20 @@ conflicts = [
         { extra = "api74" },
         { extra = "api75" },
     ],
+    # Without this, uv uses the pertzlab git build for every install, with or
+    # without the extra (see the pypi-widgets group).
+    [
+        { extra = "pertzlab-widgets" },
+        { group = "pypi-widgets" },
+    ],
 ]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu130" }
 torchvision = { index = "pytorch-cu130" }
 virtual-microscope-teaching = { git = "https://github.com/hinderling/virtual-microscope-teaching.git" }
-# The pertzlab integration branch: upstream main + the lab's stage map,
-# tweaks and in-flight upstream fixes. See PERTZLAB.md on that branch.
-pymmcore-widgets = { git = "https://github.com/pertzlab/pymmcore-widgets.git", branch = "pertzlab" }
+# Only with the pertzlab-widgets extra; without it, PyPI.
+pymmcore-widgets = { git = "https://github.com/pertzlab/pymmcore-widgets.git", branch = "pertzlab", extra = "pertzlab-widgets" }
 # PyPI napari-micromanager is 0.2.0 (no MainWindow(mmcore=...) and predates
 # the async-relevant fixes: _image_snapped race, device-leak teardown,
 # preview-during-run). Track upstream main like the other faro envs.
