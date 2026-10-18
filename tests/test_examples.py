@@ -207,9 +207,13 @@ def test_live_template_runs():
 
 
 @pytest.mark.examples
-def test_reanalysis_template_runs(tmp_dir):
-    """Produce a small source run on the virtual scope, then re-analyse it."""
-    src = _make_source_run(Path(tmp_dir) / "source")
+@pytest.mark.parametrize("source_format", ["zarr", "tiff"])
+def test_reanalysis_template_runs(tmp_dir, source_format):
+    """Produce a small source run on the virtual scope, then re-analyse it.
+
+    The template writes the results in the format of the source.
+    """
+    src = _make_source_run(Path(tmp_dir) / "source", source_format)
     rel = "reanalysis/reanalysis.ipynb"
     nb = _prepare(TEMPLATES / rel, fillers=FILLERS[rel], params=None)
     previous = os.environ.get("FARO_TEST_SRC_PATH")
@@ -223,15 +227,19 @@ def test_reanalysis_template_runs(tmp_dir):
             os.environ["FARO_TEST_SRC_PATH"] = previous
     out = Path(str(src) + "_reanalysis")
     assert (out / "exp_data.parquet").exists()
+    if source_format == "zarr":
+        assert (out / "acquisition.ome.zarr").is_dir()
+    else:
+        assert (out / "labels").is_dir()
 
 
-def _make_source_run(path: Path) -> Path:
+def _make_source_run(path: Path, source_format: str = "zarr") -> Path:
     from vmteach import load_microscope
 
     from faro.core.controller import Controller
     from faro.core.data_structures import RTMSequence, SegmentationMethod
     from faro.core.pipeline import ImageProcessingPipeline
-    from faro.core.writers import OmeZarrWriter
+    from faro.core.writers import OmeZarrWriter, TiffWriter
     from faro.feature_extraction.simple import SimpleFE
     from faro.microscope.simulation import UniMMCoreSimulation
     from faro.segmentation.base import OtsuSegmentator
@@ -258,7 +266,11 @@ def _make_source_run(path: Path) -> Path:
             channels=[{"config": "miRFP", "exposure": 50}],
         )
     )
-    ctrl = Controller(mic, pipeline, writer=OmeZarrWriter(storage_path=str(path)))
+    if source_format == "zarr":
+        writer = OmeZarrWriter(storage_path=str(path))
+    else:
+        writer = TiffWriter(str(path))
+    ctrl = Controller(mic, pipeline, writer=writer)
     ctrl.run_experiment(events).wait()
     ctrl.finish_experiment()
     assert (path / "events.json").exists()

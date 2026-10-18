@@ -455,7 +455,7 @@ Key features:
 - **Dual input format**: reads from both TIFF and OME-Zarr source experiments
 - **Reuse old segmentations**: set `use_old_segmentations=True` to skip re-segmenting and only recompute tracking/features
 - **Parallel FOV processing**: uses `n_jobs` threads to process multiple FOVs concurrently
-- **Hard-linking**: when outputting to OME-Zarr, raw data resolution levels are hard-linked instead of copied (falls back to copy on network shares)
+- **Hard-linking**: when outputting to OME-Zarr, raw data resolution levels are hard-linked instead of copied (falls back to copy on network shares). OME-Zarr output therefore needs an OME-Zarr source; for a TIFF source, pass `writer=TiffWriter(out_path)`
 - **Timestep gap correction**: `correct_timestep_jumps=True` backfills missing timesteps
 
 The [re-analysis template](templates/reanalysis/) is a copy-and-fill notebook for this pipeline.

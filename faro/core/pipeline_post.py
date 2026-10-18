@@ -158,6 +158,16 @@ class ImageProcessingPipeline_postExperiment:
         import shutil
         from faro.core.writers import _extract_positions_from_events
 
+        if not self._use_zarr:
+            # Check before the overwrite below deletes an old output store.
+            raise ValueError(
+                "An OmeZarrWriter output needs an OME-Zarr source, because it "
+                "hard-links the raw data of "
+                f"{os.path.join(self.img_storage_path, 'acquisition.ome.zarr')}. "
+                "For a TIFF source, use TiffWriter(out_path), or convert the "
+                "source first with faro.core.conversion.convert_tiff_to_omezarr."
+            )
+
         events = self._events
         position_names = _extract_positions_from_events(events)
 
