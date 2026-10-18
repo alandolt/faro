@@ -340,9 +340,8 @@ class ImageProcessingPipeline_postExperiment:
             # A ref phase (IMG_REF without ref_channels) is stored whole in
             # ref/, not as raw (see Analyzer._do_store).
             ref_channels = row.get("ref_channels")
-            ref_phase = row.get("img_type") == ImgType.IMG_REF and not (
-                isinstance(ref_channels, (list, tuple)) and len(ref_channels) > 0
-            )
+            n_ref = len(ref_channels) if isinstance(ref_channels, (list, tuple)) else 0
+            ref_phase = row.get("img_type") == ImgType.IMG_REF and n_ref == 0
             if ref_phase:
                 img = tifffile.imread(
                     os.path.join(self.img_storage_path, "ref", row["fname"] + ".tiff")
@@ -404,27 +403,34 @@ class ImageProcessingPipeline_postExperiment:
             fov_obj.fov_timestep_counter += 1
 
             if self.feature_extractor_ref is not None and self.tracker is not None:
-                if metadata.get("img_type") == ImgType.IMG_REF or metadata.get(
-                    "ref", False
-                ):
+                # A reference frame: a ref phase, a frame with inline
+                # ref_channels (events_to_df gives these rows no img_type), or
+                # a legacy row with ref=True. ref/ holds its reference image.
+                is_ref_frame = (
+                    metadata.get("img_type") == ImgType.IMG_REF
+                    or n_ref > 0
+                    or metadata.get("ref", False)
+                )
+                ref_tiff = os.path.join(
+                    self.img_storage_path, "ref", row["fname"] + ".tiff"
+                )
+                if is_ref_frame and not os.path.exists(ref_tiff):
+                    # e.g. ref/ was not copied with the data: keep the other
+                    # results of this frame, only without ref features.
+                    print(
+                        f"No reference image {ref_tiff}: no ref features for "
+                        f'timestep {metadata["timestep"]}, fov {fov_id}'
+                    )
+                elif is_ref_frame:
                     print(
                         f'Adding ref features for timestep {metadata["timestep"]}, fov {fov_id}'
                     )
-                    if self._use_zarr:
-                        # Ref images fall back to TIFF even with zarr writer
-                        ref_tiff = os.path.join(
-                            self.img_storage_path, "ref", row["fname"] + ".tiff"
-                        )
-                        if os.path.exists(ref_tiff):
-                            img_ref = tifffile.imread(ref_tiff)
-                        else:
-                            continue
-                    else:
-                        img_ref = tifffile.imread(
-                            os.path.join(
-                                self.img_storage_path, "ref", row["fname"] + ".tiff"
-                            )
-                        )
+                    # Ref images are TIFFs, also with a zarr store
+                    img_ref = tifffile.imread(ref_tiff)
+                    if n_ref > 0 and img_ref.ndim == 3 and img_ref.shape[0] > n_ref:
+                        # Data stored before 2026-05 has the whole
+                        # [imaging | ref] stack in ref/
+                        img_ref = img_ref[-n_ref:]
                     df_tracked = self.feature_extractor_ref.extract_features(
                         segmentation_results,
                         img_ref,

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 
 import numpy as np
 import pytest
@@ -238,32 +239,78 @@ class TestReplay:
         assert np.all(spy.images[0] == REF_VALUE)
 
 
+def _run_live(path, writer_cls, events, scene):
+    """Run events on the fake microscope and store them with writer_cls."""
+    pipeline = make_pipeline(path, tracker=TrackerTrackpy(search_range=50))
+    ctrl = Controller(FakeMicroscope(scene), pipeline, writer=writer_cls(path))
+    try:
+        ctrl.run_experiment(events, validate=False).wait()
+    finally:
+        ctrl.finish_experiment()
+
+
+def _reanalyse(live_path, out_path, writer_cls):
+    """Reanalyse a stored run as the reanalysis template does; return the spy."""
+    spy = SpyRefFE()
+    post = ImageProcessingPipeline_postExperiment(
+        img_storage_path=live_path,
+        out_path=out_path,
+        events=load_events_json(live_path),
+        segmentators=[SegmentationMethod("labels", OtsuSegmentator(), 0, False)],
+        feature_extractor=SimpleFE("labels"),
+        tracker=TrackerTrackpy(search_range=50),
+        feature_extractor_ref=spy,
+        n_jobs=1,  # n_jobs > 1 only prints the error of a FOV
+        writer=writer_cls(out_path),
+    )
+    post.run()
+    return spy
+
+
 class TestReanalysis:
     @pytest.mark.parametrize("writer_cls", [TiffWriter, OmeZarrWriter])
     def test_ref_phase_is_measured(self, tmp_dir, writer_cls):
         """A ref phase frame is read from ref/, where the live run stored it."""
         live_path = os.path.join(tmp_dir, "live")
-        pipeline = make_pipeline(live_path, tracker=TrackerTrackpy(search_range=50))
-        ctrl = Controller(
-            FakeMicroscope(CircleScene()), pipeline, writer=writer_cls(live_path)
-        )
-        try:
-            ctrl.run_experiment(_ref_phase_events(), validate=False).wait()
-        finally:
-            ctrl.finish_experiment()
-
-        out_path = os.path.join(tmp_dir, "reanalysis")
-        spy = SpyRefFE()
-        post = ImageProcessingPipeline_postExperiment(
-            img_storage_path=live_path,
-            out_path=out_path,
-            events=load_events_json(live_path),
-            segmentators=[SegmentationMethod("labels", OtsuSegmentator(), 0, False)],
-            feature_extractor=SimpleFE("labels"),
-            tracker=TrackerTrackpy(search_range=50),
-            feature_extractor_ref=spy,
-            n_jobs=1,  # n_jobs > 1 only prints the error of a FOV
-            writer=writer_cls(out_path),
-        )
-        post.run()
+        _run_live(live_path, writer_cls, _ref_phase_events(), CircleScene())
+        spy = _reanalyse(live_path, os.path.join(tmp_dir, "out"), writer_cls)
         assert spy.calls == 1
+
+    @pytest.mark.parametrize("writer_cls", [TiffWriter, OmeZarrWriter])
+    def test_inline_reference_channel_is_measured(self, tmp_dir, writer_cls):
+        """A frame with ref_channels gets the reference features of ref/."""
+        live_path = os.path.join(tmp_dir, "live")
+        _run_live(live_path, writer_cls, _inline_ref_events(), RefScene())
+        spy = _reanalyse(live_path, os.path.join(tmp_dir, "out"), writer_cls)
+        assert spy.calls == 1
+        assert np.all(spy.images[0] == REF_VALUE)
+
+    @pytest.mark.parametrize("writer_cls", [TiffWriter, OmeZarrWriter])
+    def test_missing_ref_image_keeps_the_frame_results(self, tmp_dir, writer_cls):
+        """Without ref/, a reference frame keeps its labels, only no ref features."""
+        live_path = os.path.join(tmp_dir, "live")
+        _run_live(live_path, writer_cls, _inline_ref_events(), RefScene())
+        shutil.rmtree(os.path.join(live_path, "ref"))
+        out_path = os.path.join(tmp_dir, "out")
+        spy = _reanalyse(live_path, out_path, TiffWriter)
+        assert spy.calls == 0
+        assert sorted(os.listdir(os.path.join(out_path, "labels"))) == [
+            "000_00000.tiff",
+            "000_00001.tiff",
+        ]
+
+    def test_ref_holds_the_whole_stack_of_old_data(self, tmp_dir):
+        """Before 2026-05, ref/ held the whole [imaging | ref] stack."""
+        old_path = os.path.join(tmp_dir, "old")
+        circle = make_circle_image()
+        writer = TiffWriter(old_path)
+        for t in range(2):
+            writer.write(circle[np.newaxis], {"fname": f"000_{t:05d}"}, "raw")
+        stack = np.stack([circle, np.full_like(circle, REF_VALUE)])
+        writer.write(stack, {"fname": "000_00001"}, "ref")
+        save_events_json(old_path, _inline_ref_events())
+
+        spy = _reanalyse(old_path, os.path.join(tmp_dir, "out"), TiffWriter)
+        assert spy.calls == 1
+        assert spy.images[0].shape == (1, H, W)  # the reference channel only
+        assert np.all(spy.images[0] == REF_VALUE)
