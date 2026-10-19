@@ -351,7 +351,7 @@ class ImageProcessingPipeline_postExperiment:
         for index, row in df.iterrows():
             t = int(row["timestep"])
             ref_channels = row.get("ref_channels")
-            n_ref = len(ref_channels) if isinstance(ref_channels, (list, tuple)) else 0
+            n_ref = len(ref_channels) if pd.api.types.is_list_like(ref_channels) else 0
             ref_phase = row.get("img_type") == ImgType.IMG_REF and n_ref == 0
             # Ref images are TIFFs, also with a zarr store
             ref_tiff = os.path.join(

@@ -25,6 +25,7 @@ from useq import MDAEvent
 from faro.core.controller import Analyzer, Controller, ControllerSimulated
 from faro.core.conversion import (
     convert_tiff_to_omezarr,
+    events_to_df,
     load_events_json,
     save_events_json,
 )
@@ -280,16 +281,18 @@ def _run_live(path, writer_cls, events, scene):
         ctrl.finish_experiment()
 
 
-def _reanalyse(live_path, out_path, writer_cls, ref_fe=None):
+def _reanalyse(live_path, out_path, writer_cls, ref_fe=None, df_acquire=None):
     """Reanalyse a stored run as the reanalysis template does; return the ref FE.
 
-    The ref FE is ref_fe, or a SpyRefFE if ref_fe is None.
+    The ref FE is ref_fe, or a SpyRefFE if ref_fe is None. With df_acquire,
+    the reanalysis reads it instead of events.json.
     """
     spy = SpyRefFE() if ref_fe is None else ref_fe
     post = ImageProcessingPipeline_postExperiment(
         img_storage_path=live_path,
         out_path=out_path,
-        events=load_events_json(live_path),
+        events=None if df_acquire is not None else load_events_json(live_path),
+        df_acquire=df_acquire,
         segmentators=[SegmentationMethod("labels", OtsuSegmentator(), 0, False)],
         feature_extractor=SimpleFE("labels"),
         tracker=TrackerTrackpy(search_range=50),
@@ -318,6 +321,17 @@ class TestReanalysis:
         spy = _reanalyse(live_path, os.path.join(tmp_dir, "out"), writer_cls)
         assert spy.calls == 1
         assert np.all(spy.images[0] == REF_VALUE)
+
+    def test_df_acquire_from_parquet_is_measured(self, tmp_dir):
+        """ref_channels read back from parquet are arrays, not lists."""
+        live_path = os.path.join(tmp_dir, "live")
+        _run_live(live_path, TiffWriter, _inline_ref_events(), RefScene())
+        parquet = os.path.join(tmp_dir, "acquire.parquet")
+        events_to_df(load_events_json(live_path)).to_parquet(parquet)
+        df_acquire = pd.read_parquet(parquet)
+        out_path = os.path.join(tmp_dir, "out")
+        spy = _reanalyse(live_path, out_path, TiffWriter, df_acquire=df_acquire)
+        assert spy.calls == 1
 
     @pytest.mark.parametrize("writer_cls", [TiffWriter, OmeZarrWriter])
     @pytest.mark.parametrize(
