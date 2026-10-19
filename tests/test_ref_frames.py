@@ -295,10 +295,17 @@ class TestReanalysis:
         assert np.all(spy.images[0] == REF_VALUE)
 
     @pytest.mark.parametrize("writer_cls", [TiffWriter, OmeZarrWriter])
-    def test_missing_ref_image_keeps_the_frame_results(self, tmp_dir, writer_cls):
-        """Without ref/, a reference frame keeps its labels, only no ref features."""
+    @pytest.mark.parametrize(
+        "events", [_inline_ref_events, _ref_phase_events], ids=["inline", "phase"]
+    )
+    def test_missing_ref_image_keeps_the_frame_results(
+        self, tmp_dir, events, writer_cls
+    ):
+        """Without ref/, a reference frame keeps its labels, only no ref
+        features. A ref phase frame has no other image and is skipped.
+        """
         live_path = os.path.join(tmp_dir, "live")
-        _run_live(live_path, writer_cls, _inline_ref_events(), RefScene())
+        _run_live(live_path, writer_cls, events(), RefScene())
         shutil.rmtree(os.path.join(live_path, "ref"))
         out_path = os.path.join(tmp_dir, "out")
         spy = _reanalyse(live_path, out_path, TiffWriter)

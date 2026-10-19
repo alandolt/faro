@@ -366,6 +366,10 @@ class ImageProcessingPipeline_postExperiment:
             ref_tiff = os.path.join(
                 self.img_storage_path, "ref", row["fname"] + ".tiff"
             )
+            if ref_phase and not os.path.exists(ref_tiff):
+                # A ref phase frame has no image outside ref/
+                print(f"No reference image {ref_tiff}: skip timestep {t}, fov {fov_id}")
+                continue
             img_ref = None
             if ref_phase or (n_ref > 0 and os.path.exists(ref_tiff)):
                 # A reference frame. _join_ref_frame rebuilds [imaging | ref]
