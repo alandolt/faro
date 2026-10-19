@@ -145,7 +145,7 @@ class ImageProcessingPipeline_postExperiment:
     ) -> np.ndarray:
         """Imaging channels of a stored frame, from the zarr store or raw/."""
         if self._use_zarr:
-            # Strip stim-readout channels, as ControllerSimulated does.
+            # Strip stim-readout channels: the live pipeline never got them.
             return self._zarr_reader.read(timestep, fov, n_imaging_channels=n_channels)
         return tifffile.imread(
             os.path.join(self.img_storage_path, "raw", fname + ".tiff")
@@ -362,13 +362,13 @@ class ImageProcessingPipeline_postExperiment:
                 print(f"No reference image {ref_tiff}: skip timestep {t}, fov {fov_id}")
                 continue
             img_ref = None
+            n_channels = len(row["channels"])
             if ref_phase or (n_ref > 0 and os.path.exists(ref_tiff)):
                 # A reference frame. _join_ref_frame rebuilds [imaging | ref]
                 # for each storage layout: the imaging channels from raw and
                 # the reference channels from ref/, or the whole frame from
                 # ref/ (a ref phase, or data stored before 2026-05, which has
                 # no raw frame here). Split it as the live pipeline does.
-                n_channels = len(row["channels"])
                 img = _join_ref_frame(
                     tifffile.imread(ref_tiff),
                     n_ref,
@@ -381,12 +381,8 @@ class ImageProcessingPipeline_postExperiment:
                 elif img.shape[0] > n_channels:
                     img_ref = img[n_channels:]
                     img = img[:n_channels]
-            elif self._use_zarr:
-                img = self._read_zarr_raw(t, int(fov_id))
             else:
-                img = tifffile.imread(
-                    os.path.join(self.img_storage_path, "raw", row["fname"] + ".tiff")
-                )
+                img = self._read_imaging(row["fname"], t, int(fov_id), n_channels)
             metadata = row.to_dict()
             metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
             shape_img = (img.shape[-2], img.shape[-1])
