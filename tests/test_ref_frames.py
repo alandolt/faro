@@ -257,14 +257,24 @@ class TestRefPhase:
         assert "img_type" not in events[0].metadata
 
 
-def _replay(project_path, storage_path):
+def _ref_phase_in_the_middle():
+    """The README ref phase, then one more imaging timepoint."""
+    after = RTMSequence(
+        time_plan={"interval": 0, "loops": 1},
+        stage_positions=[(0, 0, 0)],
+        channels=[{"config": "phase-contrast", "exposure": 10}],
+    )
+    return combine(_ref_phase_events(), after, axis="t")
+
+
+def _replay(project_path, storage_path, events=_inline_ref_events):
     """Replay a stored run with ControllerSimulated; return the ref FE spy."""
     pipeline = make_pipeline(storage_path, tracker=TrackerTrackpy(search_range=50))
     spy = SpyRefFE()
     pipeline.feature_extractor_ref = spy
     ctrl = ControllerSimulated(FakeMicroscope(CircleScene()), pipeline, project_path)
     try:
-        ctrl.run_experiment(_inline_ref_events(), validate=False).wait()
+        ctrl.run_experiment(events(), validate=False).wait()
     finally:
         ctrl.finish_experiment()
     assert ctrl.background_errors == []
@@ -302,6 +312,21 @@ class TestReplay:
         spy = _replay(old_path, os.path.join(tmp_dir, "replay"))
         assert spy.calls == 1
         assert np.all(spy.images[0] == REF_VALUE)
+
+    def test_ref_phase_without_ref_image_is_skipped(self, tmp_dir):
+        """Without ref/, the replay skips a ref phase frame, as the
+        reanalysis does, and the next frame is still tracked.
+        """
+        live_path = os.path.join(tmp_dir, "live")
+        _run_live(live_path, TiffWriter, _ref_phase_in_the_middle(), CircleScene())
+        shutil.rmtree(os.path.join(live_path, "ref"))
+        replay_path = os.path.join(tmp_dir, "replay")
+        spy = _replay(live_path, replay_path, _ref_phase_in_the_middle)
+        assert spy.calls == 0
+        tracks = pd.read_parquet(
+            os.path.join(replay_path, "tracks", "0_latest.parquet")
+        )
+        assert sorted(tracks["timestep"].unique()) == [0, 1, 3]
 
 
 def _run_live(path, writer_cls, events, scene):

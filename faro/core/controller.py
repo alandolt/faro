@@ -2042,7 +2042,15 @@ class ControllerSimulated(Controller):
             # Reference images are always TIFFs in ref/. A stack without its
             # reference channels has none (see Analyzer._do_store).
             ref_path = os.path.join(self._project_path, "ref", fname + ".tiff")
-            if img_type == ImgType.IMG_REF and (n_ref == 0 or os.path.exists(ref_path)):
+            has_ref = os.path.exists(ref_path)
+            if img_type == ImgType.IMG_REF and n_ref == 0 and not has_ref:
+                # A ref phase frame has no image outside ref/: skip it, as the
+                # reanalysis does, and release the next frame's tracking.
+                print(f"No reference image {ref_path}: skip t={t_idx}, p={p_idx}")
+                fov_state = self._analyzer.get_fov_state(meta.get("fov", 0))
+                fov_state.tracks_queue.skip_frame(t_idx)
+                return
+            if img_type == ImgType.IMG_REF and has_ref:
                 img_loaded = _join_ref_frame(
                     tifffile.imread(ref_path),
                     n_ref,
