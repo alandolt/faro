@@ -197,6 +197,39 @@ class TestReferenceChannelsMissing:
         finally:
             analyzer.shutdown(wait=False)
 
+    @pytest.mark.parametrize("writer_cls", [TiffWriter, OmeZarrWriter])
+    def test_stack_is_reloaded_from_raw(self, tmp_dir, writer_cls):
+        """With as many imaging as reference channels, ref/ cannot tell this
+        stack from a reference image, so it is stored as raw."""
+        writer = writer_cls(tmp_dir)
+        if writer_cls is OmeZarrWriter:
+            writer.init_stream(["Pos0"], ["phase-contrast"], H, W, n_timepoints=1)
+        analyzer = Analyzer(writer=writer)
+        try:
+            meta = {**_metadata(ImgType.IMG_REF), "channels": ["phase-contrast"]}
+            img = make_circle_image()[np.newaxis]
+            analyzer._do_store(img, meta, "raw")
+            np.testing.assert_array_equal(analyzer._reload_frame(meta), img)
+        finally:
+            analyzer.shutdown(wait=False)
+
+    def test_replay_tracks_the_frame(self, tmp_dir):
+        live_path = os.path.join(tmp_dir, "live")
+        analyzer = Analyzer(writer=TiffWriter(live_path))
+        try:
+            for t, img_type in enumerate([ImgType.IMG_RAW, ImgType.IMG_REF]):
+                meta = {**_metadata(img_type), "channels": ["phase-contrast"]}
+                meta.update(timestep=t, fname=f"000_{t:05d}")
+                analyzer._do_store(make_circle_image()[np.newaxis], meta, "raw")
+        finally:
+            analyzer.shutdown(wait=True)
+        replay_path = os.path.join(tmp_dir, "replay")
+        assert _replay(live_path, replay_path).calls == 0
+        tracks = pd.read_parquet(
+            os.path.join(replay_path, "tracks", "0_latest.parquet")
+        )
+        assert sorted(tracks.timestep.unique()) == [0, 1]
+
 
 class TestRefPhase:
     @pytest.mark.parametrize("with_writer", [False, True], ids=["no-writer", "writer"])

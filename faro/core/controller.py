@@ -55,9 +55,9 @@ def _join_ref_frame(ref: np.ndarray, n_ref: int, read_imaging) -> np.ndarray:
     ``Analyzer._do_store`` writes the imaging channels of a reference frame
     as raw and its ``n_ref`` reference channels to ``ref/``. It writes the
     whole frame to ``ref/`` when the frame has no separate reference channels
-    (a ref phase) or when the stack lacks them. Data stored before 2026-05
-    also has the whole stack in ``ref/``. A ``ref`` image with more than
-    ``n_ref`` channels is such a whole frame and is returned as it is.
+    (a ref phase). Data stored before 2026-05 also has the whole stack in
+    ``ref/``. A ``ref`` image with more than ``n_ref`` channels is such a
+    whole frame and is returned as it is.
     Otherwise ``read_imaging()`` gives the imaging channels.
     """
     if ref.ndim == 2:
@@ -435,6 +435,9 @@ class Analyzer:
             if n_ref > 0 and img.ndim == 3 and img.shape[0] > n_channels:
                 self.writer.write(img[:n_channels], metadata, "raw")
                 self.writer.write(img[n_channels:], metadata, "ref")
+            elif n_ref > 0:
+                # The stack lacks its ref channels: it is only an imaging frame.
+                self.writer.write(img, metadata, "raw")
             else:
                 self.writer.write(img, metadata, "ref")
 
@@ -537,15 +540,19 @@ class Analyzer:
         A reference frame is stored in two parts (see ``_do_store``): the
         imaging channels as "raw" and the reference channels as "ref". The
         pipeline expects both in one stack, imaging channels first. A ref
-        phase is stored whole as "ref" (see ``_join_ref_frame``).
+        phase is stored whole as "ref" (see ``_join_ref_frame``). A stack
+        without its reference channels is stored only as "raw".
         """
         if metadata.get("img_type") != ImgType.IMG_REF:
             return self.writer.read_raw(metadata)
-        return _join_ref_frame(
-            self.writer.read_ref(metadata),
-            len(metadata.get("ref_channels", ())),
-            lambda: self.writer.read_raw(metadata),
-        )
+        n_ref = len(metadata.get("ref_channels", ()))
+        try:
+            ref = self.writer.read_ref(metadata)
+        except FileNotFoundError:
+            if n_ref == 0:  # a ref phase is only in ref/
+                raise
+            return self.writer.read_raw(metadata)
+        return _join_ref_frame(ref, n_ref, lambda: self.writer.read_raw(metadata))
 
     def _deferred_worker(self):
         """Worker thread that processes deferred images when capacity becomes available.
@@ -2031,17 +2038,18 @@ class ControllerSimulated(Controller):
             p_idx = event.index.get("p", 0)
 
             n_channels = len(meta.get("channels", ()))
-            if img_type == ImgType.IMG_RAW:
-                img_loaded = self._read_imaging(fname, t_idx, p_idx, n_channels)
-            elif img_type == ImgType.IMG_REF:
-                # Reference images are always TIFFs in ref/
+            n_ref = len(meta.get("ref_channels", ()))
+            # Reference images are always TIFFs in ref/. A stack without its
+            # reference channels has none (see Analyzer._do_store).
+            ref_path = os.path.join(self._project_path, "ref", fname + ".tiff")
+            if img_type == ImgType.IMG_REF and (n_ref == 0 or os.path.exists(ref_path)):
                 img_loaded = _join_ref_frame(
-                    tifffile.imread(
-                        os.path.join(self._project_path, "ref", fname + ".tiff")
-                    ),
-                    len(meta.get("ref_channels", ())),
+                    tifffile.imread(ref_path),
+                    n_ref,
                     lambda: self._read_imaging(fname, t_idx, p_idx, n_channels),
                 )
+            elif img_type in (ImgType.IMG_RAW, ImgType.IMG_REF):
+                img_loaded = self._read_imaging(fname, t_idx, p_idx, n_channels)
             else:
                 raise ValueError(f"Unknown image type: {img_type}")
             self._analyzer.run(img_loaded, event)
