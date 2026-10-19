@@ -1,6 +1,7 @@
 # combines a segmentor, stimulator and tracker into a image processing pipeline.
 
 import inspect
+import logging
 import os
 from typing import List
 
@@ -18,6 +19,8 @@ from faro.core.data_structures import FovState, ImgType, SegmentationMethod, Wai
 from faro.core.utils import labels_to_particles, create_folders
 from datetime import datetime
 import queue
+
+logger = logging.getLogger(__name__)
 
 
 def store_img(img: np.array, metadata, path: str, folder: str, *, writer=None):
@@ -401,12 +404,16 @@ class ImageProcessingPipeline:
             )
 
         # Split ref channels off the combined image so that segmentation and
-        # regular feature extraction only see imaging channels.
+        # regular feature extraction only see imaging channels. A ref phase
+        # (img_type IMG_REF without ref_channels, see README) has no separate
+        # ref channels: its imaging channels are the reference.
         img_ref = None
         if metadata.get("img_type") == ImgType.IMG_REF:
             n_ref_channels = len(metadata.get("ref_channels", ()))
             n_channels = len(metadata.get("channels", ()))
-            if n_ref_channels > 0 and img.shape[0] > n_channels:
+            if n_ref_channels == 0:
+                img_ref = img
+            elif img.shape[0] > n_channels:
                 img_ref = img[n_channels:]
                 img = img[:n_channels]
 
@@ -444,7 +451,7 @@ class ImageProcessingPipeline:
                 frame_idx, timeout=timeout_time
             )
         except queue.Empty as e:
-            print("Exception", e)
+            self._analyzer._record_background_error("pipeline", e)
             # Predecessor never arrived → fallback to file-based recovery
             file_path = os.path.join(self.storage_path, "tracks", filename_for_parquet)
             try:
@@ -509,12 +516,21 @@ class ImageProcessingPipeline:
                     and not df_tracked.empty
                     and "particle" in df_tracked.columns
                 ):
-                    df_tracked = self.feature_extractor_ref.extract_features(
-                        segmentation_results,
-                        img_ref if img_ref is not None else img,
-                        df_tracked,
-                        metadata,
-                    )
+                    if img_ref is None:
+                        # ref_channels are set, but they are not in the image.
+                        # Do not measure the imaging channels instead.
+                        logger.warning(
+                            "Reference frame fov=%s t=%s has no reference "
+                            "channels (image shape %s); no reference features "
+                            "for this frame.",
+                            metadata.get("fov"),
+                            frame_idx,
+                            img.shape,
+                        )
+                    else:
+                        df_tracked = self.feature_extractor_ref.extract_features(
+                            segmentation_results, img_ref, df_tracked, metadata
+                        )
             tracked_ok = True
         finally:
             if tracked_ok:

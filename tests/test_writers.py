@@ -274,6 +274,22 @@ class TestOmeZarrReadRaw:
             writer.close()
 
 
+class TestReadRef:
+    """``read_ref`` returns the reference channels of a reference frame.
+
+    The deferred-pipeline path needs it to rebuild a reference frame from
+    its two stored parts ("raw" and "ref").
+    """
+
+    @pytest.mark.parametrize("cls", [TiffWriter, OmeZarrWriter, OmeZarrWriterPlate])
+    def test_read_ref_roundtrips(self, cls, tmp_dir):
+        writer = cls(tmp_dir)
+        ref = _raw(1, 0, n_channels=1)
+        writer.write(ref, _meta(1, 0), "ref")
+        np.testing.assert_array_equal(writer.read_ref(_meta(1, 0)), ref)
+        writer.close()
+
+
 class TestOmeZarrRawReader:
     """The shared reader must read a *closed* store from a path alone.
 
@@ -327,11 +343,38 @@ class TestOmeZarrRawReader:
         reader = OmeZarrRawReader(str(path))
         for t in range(N_T):
             for p in range(n_pos):
-                got = reader.read(
-                    t, p, n_imaging_channels=len(IMG_CHANNELS)
-                )
+                got = reader.read(t, p, n_imaging_channels=len(IMG_CHANNELS))
                 assert got.shape == (len(IMG_CHANNELS), IMG_H, IMG_W)
                 np.testing.assert_array_equal(got, _raw(t, p))
+
+    @pytest.mark.parametrize(
+        "cls,n_pos",
+        [
+            (OmeZarrWriter, 1),
+            (OmeZarrWriter, 3),
+            (OmeZarrWriterPlate, 3),
+        ],
+    )
+    def test_single_channel_frame_has_a_channel_axis(self, cls, n_pos, tmp_dir):
+        """With one channel and no stim images, a frame is still (c, y, x)."""
+        writer = cls(tmp_dir, n_timepoints=N_T)
+        writer.init_stream(
+            position_names=[f"Pos{i}" for i in range(n_pos)],
+            channel_names=IMG_CHANNELS[:1],
+            image_height=IMG_H,
+            image_width=IMG_W,
+            n_timepoints=N_T,
+        )
+        for t in range(N_T):
+            for p in range(n_pos):
+                writer.write(_raw(t, p, n_channels=1), _meta(t, p), "raw")
+        writer.close()
+        reader = OmeZarrRawReader(str(Path(tmp_dir) / ZARR_DIRNAME))
+        for t in range(N_T):
+            for p in range(n_pos):
+                got = reader.read(t, p)
+                assert got.shape == (1, IMG_H, IMG_W)
+                np.testing.assert_array_equal(got, _raw(t, p, n_channels=1))
 
 
 # ===========================================================================
@@ -356,9 +399,7 @@ class TestOmeZarrStimRouting:
             writer.write(_raw(t, 0), _meta(t, 0), "raw")
         writer.close()
 
-        root = zarr.open_group(
-            str(Path(tmp_dir) / ZARR_DIRNAME), mode="r"
-        )
+        root = zarr.open_group(str(Path(tmp_dir) / ZARR_DIRNAME), mode="r")
         raw = root["0"]
         # Only the imaging channels — stim channels excluded
         assert raw.shape[-3] == len(IMG_CHANNELS)
@@ -376,9 +417,7 @@ class TestOmeZarrWriterPlate:
 
     @pytest.fixture
     def zarr_path(self, tmp_dir):
-        writer = OmeZarrWriterPlate(
-            tmp_dir, store_stim_images=False, n_timepoints=N_T
-        )
+        writer = OmeZarrWriterPlate(tmp_dir, store_stim_images=False, n_timepoints=N_T)
         writer.init_stream(
             position_names=[f"Pos{i}" for i in range(self.N_POS)],
             channel_names=IMG_CHANNELS,
@@ -408,7 +447,9 @@ class TestOmeZarrWriterPlate:
         """Each well hosts a single image group ``<row>/<col>/0`` whose ``0``
         array carries the (t, c, y, x) raw stack."""
         for i in range(self.N_POS):
-            arr = zarr.open_array(str(zarr_path / "A" / str(i + 1) / "0" / "0"), mode="r")
+            arr = zarr.open_array(
+                str(zarr_path / "A" / str(i + 1) / "0" / "0"), mode="r"
+            )
             assert arr.shape == (N_T, len(IMG_CHANNELS), IMG_H, IMG_W)
 
 

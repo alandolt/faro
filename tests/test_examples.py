@@ -96,11 +96,15 @@ def _prepare(nb_path: Path, fillers: dict[str, str], params: str | None):
             cell.source = cell.source + "\n" + params
         # magics do not survive a plain kernel run without IPython extensions
         cell.source = "\n".join(
-            line for line in cell.source.splitlines() if not line.lstrip().startswith("%")
+            line
+            for line in cell.source.splitlines()
+            if not line.lstrip().startswith("%")
         )
         cells.append(cell)
     missing = set(fillers) - seen
-    assert not missing, f"{nb_path.name}: fillers without a TODO cell: {sorted(missing)}"
+    assert (
+        not missing
+    ), f"{nb_path.name}: fillers without a TODO cell: {sorted(missing)}"
     nb.cells = cells
     return nb
 
@@ -153,7 +157,9 @@ def _all_notebooks() -> list[Path]:
 def test_readme_anchors_exist(nb_path: Path):
     anchors = _readme_anchors()
     missing = _notebook_readme_links(nb_path) - anchors
-    assert not missing, f"{nb_path.name} links to README sections that do not exist: {sorted(missing)}"
+    assert (
+        not missing
+    ), f"{nb_path.name} links to README sections that do not exist: {sorted(missing)}"
 
 
 @pytest.mark.parametrize("rel", sorted(FILLERS), ids=lambda r: r.split("/")[0])
@@ -166,7 +172,9 @@ def test_template_raise_cells_match_fillers(rel: str):
         if c.cell_type == "code" and "raise NotImplementedError" in c.source
     }
     assert None not in raising, f"{rel}: a raising cell is missing its todo:<name> tag"
-    assert raising == set(FILLERS[rel]), f"{rel}: raise cells {raising} != fillers {set(FILLERS[rel])}"
+    assert raising == set(
+        FILLERS[rel]
+    ), f"{rel}: raise cells {raising} != fillers {set(FILLERS[rel])}"
 
 
 def test_template_folders_are_complete():
@@ -174,7 +182,9 @@ def test_template_folders_are_complete():
     for folder in TEMPLATES.iterdir():
         if not folder.is_dir():
             continue
-        assert (folder / "pyproject.toml").exists(), f"{folder.name}: missing pyproject.toml"
+        assert (
+            folder / "pyproject.toml"
+        ).exists(), f"{folder.name}: missing pyproject.toml"
         assert list(folder.glob("*.ipynb")), f"{folder.name}: missing notebook"
 
 
@@ -197,9 +207,13 @@ def test_live_template_runs():
 
 
 @pytest.mark.examples
-def test_reanalysis_template_runs(tmp_dir):
-    """Produce a small source run on the virtual scope, then re-analyse it."""
-    src = _make_source_run(Path(tmp_dir) / "source")
+@pytest.mark.parametrize("source_format", ["zarr", "tiff"])
+def test_reanalysis_template_runs(tmp_dir, source_format):
+    """Produce a small source run on the virtual scope, then re-analyse it.
+
+    The template writes the results in the format of the source.
+    """
+    src = _make_source_run(Path(tmp_dir) / "source", source_format)
     rel = "reanalysis/reanalysis.ipynb"
     nb = _prepare(TEMPLATES / rel, fillers=FILLERS[rel], params=None)
     previous = os.environ.get("FARO_TEST_SRC_PATH")
@@ -213,15 +227,19 @@ def test_reanalysis_template_runs(tmp_dir):
             os.environ["FARO_TEST_SRC_PATH"] = previous
     out = Path(str(src) + "_reanalysis")
     assert (out / "exp_data.parquet").exists()
+    if source_format == "zarr":
+        assert (out / "acquisition.ome.zarr").is_dir()
+    else:
+        assert (out / "labels").is_dir()
 
 
-def _make_source_run(path: Path) -> Path:
+def _make_source_run(path: Path, source_format: str = "zarr") -> Path:
     from vmteach import load_microscope
 
     from faro.core.controller import Controller
     from faro.core.data_structures import RTMSequence, SegmentationMethod
     from faro.core.pipeline import ImageProcessingPipeline
-    from faro.core.writers import OmeZarrWriter
+    from faro.core.writers import OmeZarrWriter, TiffWriter
     from faro.feature_extraction.simple import SimpleFE
     from faro.microscope.simulation import UniMMCoreSimulation
     from faro.segmentation.base import OtsuSegmentator
@@ -234,7 +252,9 @@ def _make_source_run(path: Path) -> Path:
     pipeline = ImageProcessingPipeline(
         storage_path=str(path),
         segmentators=[
-            SegmentationMethod("labels", OtsuSegmentator(), use_channel=0, save_tracked=True)
+            SegmentationMethod(
+                "labels", OtsuSegmentator(), use_channel=0, save_tracked=True
+            )
         ],
         feature_extractor=SimpleFE("labels"),
         tracker=TrackerTrackpy(search_range=30),
@@ -246,7 +266,11 @@ def _make_source_run(path: Path) -> Path:
             channels=[{"config": "miRFP", "exposure": 50}],
         )
     )
-    ctrl = Controller(mic, pipeline, writer=OmeZarrWriter(storage_path=str(path)))
+    if source_format == "zarr":
+        writer = OmeZarrWriter(storage_path=str(path))
+    else:
+        writer = TiffWriter(str(path))
+    ctrl = Controller(mic, pipeline, writer=writer)
     ctrl.run_experiment(events).wait()
     ctrl.finish_experiment()
     assert (path / "events.json").exists()

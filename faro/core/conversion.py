@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import tifffile
 
-from faro.core.data_structures import Channel, PowerChannel, RTMEvent
+from faro.core.data_structures import Channel, ImgType, PowerChannel, RTMEvent
 
 
 def _dict_to_channel(d: dict) -> Channel | PowerChannel:
@@ -186,6 +186,10 @@ def _event_to_dict(event: RTMEvent) -> dict:
     Uses ``dataclasses.asdict`` for Channel/PowerChannel so that subclass
     fields (e.g. ``power``) are preserved.
     """
+    metadata = dict(event.metadata)
+    if isinstance(metadata.get("img_type"), ImgType):
+        # JSON has no enum: store the name, _dict_to_event restores it
+        metadata["img_type"] = metadata["img_type"].name
     return {
         "index": dict(event.index),
         "channels": [asdict(ch) for ch in event.channels],
@@ -196,12 +200,15 @@ def _event_to_dict(event: RTMEvent) -> dict:
         "z_pos": event.z_pos,
         "pos_name": event.pos_name,
         "min_start_time": event.min_start_time,
-        "metadata": event.metadata,
+        "metadata": metadata,
     }
 
 
 def _dict_to_event(d: dict) -> RTMEvent:
     """Deserialize a dict (from JSON) back to an RTMEvent."""
+    metadata = dict(d.get("metadata", {}))
+    if isinstance(metadata.get("img_type"), str):
+        metadata["img_type"] = ImgType[metadata["img_type"]]
     return RTMEvent(
         index=d["index"],
         channels=tuple(_dict_to_channel(ch) for ch in d.get("channels", [])),
@@ -212,7 +219,7 @@ def _dict_to_event(d: dict) -> RTMEvent:
         z_pos=d.get("z_pos"),
         pos_name=d.get("pos_name"),
         min_start_time=d.get("min_start_time"),
-        metadata=d.get("metadata", {}),
+        metadata=metadata,
     )
 
 

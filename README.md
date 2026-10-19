@@ -333,6 +333,8 @@ ref_phase  = RTMSequence(
 events = combine(experiment, ref_phase, axis="t")
 ```
 
+`RefFE` measures only one reference channel: one entry in `ref_channels`, or a ref phase with one channel (all channels of a ref phase are the reference). For more channels, subclass `RefFE` and pass it one channel, e.g. `image[-1:]`.
+
 ### Frame Specification
 
 Both `stim_frames` and `ref_frames` accept:
@@ -504,7 +506,7 @@ Key features:
 - **Dual input format**: reads from both TIFF and OME-Zarr source experiments
 - **Reuse old segmentations**: set `use_old_segmentations=True` to skip re-segmenting and only recompute tracking/features
 - **Parallel FOV processing**: uses `n_jobs` threads to process multiple FOVs concurrently
-- **Hard-linking**: when outputting to OME-Zarr, raw data resolution levels are hard-linked instead of copied (falls back to copy on network shares)
+- **Hard-linking**: when outputting to OME-Zarr, raw data resolution levels are hard-linked instead of copied (falls back to copy on network shares). OME-Zarr output therefore needs an OME-Zarr source; for a TIFF source, pass `writer=TiffWriter(out_path)`
 - **Timestep gap correction**: `correct_timestep_jumps=True` backfills missing timesteps
 
 The [re-analysis template](templates/reanalysis/) is a copy-and-fill notebook for this pipeline.
