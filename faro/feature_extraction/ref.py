@@ -9,6 +9,7 @@ from .base_ref import FeatureExtractorRef
 
 
 class RefFE(FeatureExtractorRef):
+    """Mean intensity of each cell in a one-channel reference image."""
 
     def extract_features(self, segmentation_results, image, df_tracked, metadata):
         # Measure each label, then give it the particle ID of the newest

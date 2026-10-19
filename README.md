@@ -284,6 +284,8 @@ ref_phase  = RTMSequence(
 events = combine(experiment, ref_phase, axis="t")
 ```
 
+`RefFE` measures only one reference channel: one entry in `ref_channels`, or a ref phase with one channel (all channels of a ref phase are the reference). For more channels, subclass `RefFE` and pass it one channel, e.g. `image[-1:]`.
+
 ### Frame Specification
 
 Both `stim_frames` and `ref_frames` accept:
