@@ -50,6 +50,12 @@ Shared helpers live in:
 pytest-collected — they're dev scripts that write outputs to disk for
 napari inspection.
 
+`manual_core_safety_check.ipynb` is not pytest-collected either. It runs
+the core-safety fixes end to end on the virtual microscope (real MDA
+runner, DMD path and napari GUI) and asserts the results. Run all cells
+in Jupyter after changes to the Controller, Analyzer, writers or
+reanalysis. It takes about 2 minutes.
+
 ## What the built-in scenes look like
 
 ![CircleScene](assets/scene_circle.png)
