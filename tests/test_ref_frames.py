@@ -114,6 +114,31 @@ def _ref_phase_events():
     return combine(experiment, ref_phase, axis="t")
 
 
+class TestRefFE:
+    def test_particle_0_is_measured(self):
+        """trackpy and motile give particle 0 to a cell; it must get a value."""
+        labels = np.zeros((4, 4), dtype=np.uint16)
+        labels[0, 0], labels[3, 3] = 1, 2
+        ref = np.zeros((1, 4, 4), dtype=np.uint16)
+        ref[0, 0, 0], ref[0, 3, 3] = 10, 20
+        # The newest timestep (1) has other label -> particle pairs than t=0.
+        df = pd.DataFrame(
+            {
+                "timestep": [0, 0, 1, 1],
+                "fov": 0,
+                "fname": ["000_00000"] * 2 + ["000_00001"] * 2,
+                "label": [1, 2, 1, 2],
+                "particle": [0, 1, 1, 0],
+            }
+        )
+        out = RefFE("labels").extract_features(
+            {"labels": labels}, ref, df, {"timestep": 1, "fov": 0}
+        )
+        newest = out[out["timestep"] == 1].set_index("particle")
+        assert newest["ref_mean_intensity"].to_dict() == {0: 20.0, 1: 10.0}
+        assert out.loc[out["timestep"] == 0, "ref_mean_intensity"].isna().all()
+
+
 class TestReloadFrame:
     def test_reference_frame_gets_its_reference_channels_back(self, tmp_dir):
         writer = TiffWriter(tmp_dir)

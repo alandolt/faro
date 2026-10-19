@@ -6,28 +6,22 @@ from skimage.segmentation import expand_labels
 from skimage.measure import regionprops_table
 import pandas as pd
 from .base_ref import FeatureExtractorRef
-from ..core.utils import labels_to_particles
 
 
 class RefFE(FeatureExtractorRef):
 
     def extract_features(self, segmentation_results, image, df_tracked, metadata):
-        tracked_label = labels_to_particles(
-            segmentation_results[self.used_mask], df_tracked
-        )
-        tracked_label = np.expand_dims(tracked_label, 0)
+        # Measure each label, then give it the particle ID of the newest
+        # frame. Not with a particle image: particle 0 would be background.
+        labels = np.expand_dims(segmentation_results[self.used_mask], 0)
         table = skimage.measure.regionprops_table(
-            tracked_label, image, properties=["label", "mean_intensity"]
+            labels, image, properties=["label", "mean_intensity"]
         )
         table = pd.DataFrame.from_dict(table)
-        table = table.rename(
-            {
-                "mean_intensity": "ref_mean_intensity",
-                "label": "particle",
-            },
-            axis=1,
-        )
-        table = pd.DataFrame.from_dict(table)
+        table = table.rename({"mean_intensity": "ref_mean_intensity"}, axis=1)
+        newest = df_tracked[df_tracked["timestep"] == df_tracked["timestep"].max()]
+        table = table.merge(newest[["label", "particle"]], on="label")
+        table = table.drop(columns="label")
 
         if not self.multi_timepoint:
             df_tracked = df_tracked.merge(table, on=["particle"])
