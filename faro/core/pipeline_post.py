@@ -81,6 +81,13 @@ class ImageProcessingPipeline_postExperiment:
         # Detect OME-Zarr input
         zarr_path = os.path.join(img_storage_path, "acquisition.ome.zarr")
         self._use_zarr = os.path.isdir(zarr_path)
+        if self._writer_is_omezarr and not self._use_zarr:
+            raise ValueError(
+                "An OmeZarrWriter output needs an OME-Zarr source, because it "
+                f"hard-links the raw data of {zarr_path}. For a TIFF source, use "
+                "TiffWriter(out_path), or convert the source first with "
+                "faro.core.conversion.convert_tiff_to_omezarr."
+            )
         if self._use_zarr:
             import zarr
 
@@ -170,28 +177,12 @@ class ImageProcessingPipeline_postExperiment:
         import shutil
         from faro.core.writers import _extract_positions_from_events
 
-        if not self._use_zarr:
-            # Check before the overwrite below deletes an old output store.
-            raise ValueError(
-                "An OmeZarrWriter output needs an OME-Zarr source, because it "
-                "hard-links the raw data of "
-                f"{os.path.join(self.img_storage_path, 'acquisition.ome.zarr')}. "
-                "For a TIFF source, use TiffWriter(out_path), or convert the "
-                "source first with faro.core.conversion.convert_tiff_to_omezarr."
-            )
-
         events = self._events
         position_names = _extract_positions_from_events(events)
 
         # Read one frame to determine image dimensions
         row = self.df_acquire.iloc[0]
-        t, fov = int(row["timestep"]), int(row["fov"])
-        if self._use_zarr:
-            sample = self._read_zarr_raw(t, fov)
-        else:
-            sample = tifffile.imread(
-                os.path.join(self.img_storage_path, "raw", row["fname"] + ".tiff")
-            )
+        sample = self._read_zarr_raw(int(row["timestep"]), int(row["fov"]))
         image_height, image_width = sample.shape[-2], sample.shape[-1]
 
         # Set writer attributes needed for label creation (skip init_stream

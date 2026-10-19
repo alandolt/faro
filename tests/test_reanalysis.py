@@ -35,15 +35,14 @@ def test_omezarr_output_needs_an_omezarr_source(tmp_dir):
         ctrl.finish_experiment()
 
     out = os.path.join(tmp_dir, "out")
-    post = ImageProcessingPipeline_postExperiment(
-        img_storage_path=src,
-        out_path=out,
-        events=load_events_json(src),
-        segmentators=[SegmentationMethod("labels", OtsuSegmentator(), 0, False)],
-        feature_extractor=SimpleFE("labels"),
-        tracker=TrackerTrackpy(search_range=50),
-        n_jobs=1,
-        writer=OmeZarrWriter(out),
-    )
     with pytest.raises(ValueError, match="TiffWriter"):
-        post.run()
+        ImageProcessingPipeline_postExperiment(
+            img_storage_path=src,
+            out_path=out,
+            events=load_events_json(src),
+            segmentators=[SegmentationMethod("labels", OtsuSegmentator(), 0, False)],
+            feature_extractor=SimpleFE("labels"),
+            tracker=TrackerTrackpy(search_range=50),
+            n_jobs=1,
+            writer=OmeZarrWriter(out),
+        )
