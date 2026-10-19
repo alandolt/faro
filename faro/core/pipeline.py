@@ -451,7 +451,7 @@ class ImageProcessingPipeline:
                 frame_idx, timeout=timeout_time
             )
         except queue.Empty as e:
-            print("Exception", e)
+            self._analyzer._record_background_error("pipeline", e)
             # Predecessor never arrived → fallback to file-based recovery
             file_path = os.path.join(self.storage_path, "tracks", filename_for_parquet)
             try:

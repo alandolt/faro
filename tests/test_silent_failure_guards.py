@@ -12,6 +12,7 @@ import threading
 import time
 
 import numpy as np
+import pandas as pd
 import pytest
 from useq import MDAEvent
 
@@ -19,6 +20,7 @@ import faro.core.controller as controller_module
 from faro.core.controller import KEEP_ERRORS_PER_KIND, Analyzer, Controller
 from faro.core.data_structures import ImgType
 from faro.core.writers import TiffWriter
+from faro.segmentation.base import OtsuSegmentator
 from faro.tracking.trackpy import TrackerTrackpy
 
 from tests.fake_microscope import FakeMicroscope
@@ -210,6 +212,22 @@ class TestFrameCallbacks:
             ctrl.finish_experiment()
 
 
+def _raw_event(t: int) -> MDAEvent:
+    """Event of one phase-contrast frame of FOV 0, as Analyzer.run gets it."""
+    return MDAEvent(
+        index={"t": t, "p": 0},
+        metadata={
+            "fov": 0,
+            "timestep": t,
+            "fname": f"000_{t:05d}",
+            "img_type": ImgType.IMG_RAW,
+            "channels": ["phase-contrast"],
+            "ref_channels": [],
+            "stim": False,
+        },
+    )
+
+
 class TestStorageQueueFull:
     def test_lost_frame_is_recorded_and_released(self, tmp_dir, monkeypatch):
         """A frame that does not fit in the storage queue is a background error.
@@ -229,21 +247,7 @@ class TestStorageQueueFull:
         pipeline = make_pipeline(tmp_dir, tracker=TrackerTrackpy(search_range=50))
         analyzer = Analyzer(pipeline, max_queue_size=1, writer=TiffWriter(tmp_dir))
         img = make_circle_image()[np.newaxis]
-        events = [
-            MDAEvent(
-                index={"t": t, "p": 0},
-                metadata={
-                    "fov": 0,
-                    "timestep": t,
-                    "fname": f"000_{t:05d}",
-                    "img_type": ImgType.IMG_RAW,
-                    "channels": ["phase-contrast"],
-                    "ref_channels": [],
-                    "stim": False,
-                },
-            )
-            for t in range(3)
-        ]
+        events = [_raw_event(t) for t in range(3)]
         try:
             analyzer.run(img, events[0])
             assert entered.wait(timeout=10)  # the worker holds frame 0
@@ -261,6 +265,40 @@ class TestStorageQueueFull:
         ]
         tracks = analyzer.get_fov_state(0).tracks_queue
         assert tracks.wait_for_frame(2, timeout=1) is None  # skipped
+
+
+class TestDeferredFramesInOrder:
+    def test_deferred_frames_keep_all_timesteps(self, tmp_dir, monkeypatch):
+        """Frames deferred by a full pipeline reach it in order.
+
+        Before, a newer frame could take the free slot and wait for its
+        deferred predecessor until _queue_timeout. It then tracked from the
+        last parquet, and the older frame later overwrote that parquet, so
+        timesteps were lost without an error.
+        """
+        segment = OtsuSegmentator.segment
+
+        def slow_segment(self, image):
+            time.sleep(0.1)  # frames arrive faster than the pipeline runs
+            return segment(self, image)
+
+        monkeypatch.setattr(OtsuSegmentator, "segment", slow_segment)
+        pipeline = make_pipeline(tmp_dir, tracker=TrackerTrackpy(search_range=50))
+        pipeline._queue_timeout = 2
+        analyzer = Analyzer(pipeline, writer=TiffWriter(tmp_dir))
+        # Set after __init__, so that the storage queue stays large.
+        analyzer.max_queue_size = 1
+        img = make_circle_image()[np.newaxis]
+        try:
+            for t in range(8):
+                analyzer.run(img, _raw_event(t))
+        finally:
+            analyzer.shutdown(wait=True)
+
+        assert analyzer.background_errors == []
+        assert analyzer.skipped_pipeline > 0  # the deferred path was used
+        tracks = pd.read_parquet(os.path.join(tmp_dir, "tracks", "0_latest.parquet"))
+        assert sorted(tracks.timestep.unique()) == list(range(8))
 
 
 class TestAssertNoBackgroundErrors:

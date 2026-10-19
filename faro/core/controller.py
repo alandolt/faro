@@ -162,6 +162,8 @@ class Analyzer:
         self.max_queue_size = max_queue_size
         self.active_pipeline_tasks = 0
         self.task_lock = threading.Lock()
+        # Notified when a pipeline task finishes (see _deferred_worker).
+        self._slot_freed = threading.Condition(self.task_lock)
         # Debug settings
         self.debug = debug
         self.debug_every = max(1, int(debug_every))
@@ -483,8 +485,13 @@ class Analyzer:
             return
 
         with self.task_lock:
-            # Check if we have capacity for pipeline
-            if self.active_pipeline_tasks >= self.max_queue_size:
+            # Defer if the pipeline is full, or if older frames are still
+            # deferred: frames must reach the pipeline in order, because
+            # tracking needs frame N-1 before frame N.
+            if (
+                self.active_pipeline_tasks >= self.max_queue_size
+                or self._deferred_queue.unfinished_tasks > 0
+            ):
                 # Pipeline is overloaded - defer this image for later processing
                 self.skipped_pipeline += 1
                 # Queue metadata only — the image is reloaded from storage in
@@ -545,8 +552,7 @@ class Analyzer:
 
         Loads images from disk instead of keeping them in RAM.
         Drains all remaining items before exiting after ``_stop_event`` is set.
-        During shutdown the capacity check is skipped so the queue drains
-        instead of spinning on requeue.
+        During shutdown the capacity check is skipped so the queue drains.
         """
         while True:
             try:
@@ -557,32 +563,18 @@ class Analyzer:
                 continue
 
             try:
-                # During shutdown, skip capacity check to ensure the queue drains.
-                shutting_down = self._stop_event.is_set()
-                with self.task_lock:
-                    if (
-                        not shutting_down
+                # Wait for a free slot, but keep this frame: deferred frames
+                # reach the pipeline in order, and new frames are deferred
+                # behind them (see _try_submit_pipeline). During shutdown,
+                # skip the wait to ensure the queue drains.
+                with self._slot_freed:
+                    while (
+                        not self._stop_event.is_set()
                         and self.active_pipeline_tasks >= self.max_queue_size
                     ):
-                        # Still overloaded - put back in queue and wait
-                        self._deferred_queue.put_nowait((event, metadata, folder))
-                        if self.debug:
-                            print(
-                                f"[Analyzer] Still overloaded -> requeue deferred (active={self.active_pipeline_tasks}, max={self.max_queue_size})"
-                            )
-                        # Keep this sleep inside the lock. Holding the lock
-                        # here blocks _try_submit_pipeline, so a freed
-                        # pipeline slot goes to a deferred (older) frame and
-                        # not to a new frame. Tracking needs frame N-1 before
-                        # frame N. If new frames take the slots, they block
-                        # in get_predecessor until _queue_timeout, and
-                        # TestBurstNoSignalLoss fails. See TODO.md for a
-                        # cleaner fix.
-                        time.sleep(0.5)
-                        continue
-
-                    # Capacity available (or shutting down) - increment counter
+                        self._slot_freed.wait(timeout=1.0)
                     self.active_pipeline_tasks += 1
+                shutting_down = self._stop_event.is_set()
 
                 # Reload the frame's pixels from storage through the writer
                 # backend. This is the crux of the deferral design: the in-RAM
@@ -700,6 +692,7 @@ class Analyzer:
         """
         with self.task_lock:
             self.active_pipeline_tasks -= 1
+            self._slot_freed.notify()
 
         # Check if the task raised an exception
         if future is not None:
