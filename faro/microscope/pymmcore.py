@@ -12,7 +12,7 @@ from faro.microscope.base import AbstractMicroscope
 class ConfigGroupControl:
     """A config group shown as a preset dropdown in ``faro-napari``.
 
-    For ``PyMMCoreMicroscope.EXTRA_CONTROLS``, e.g.
+    For ``PyMMCoreMicroscope.NAPARI_CONTROLS``, e.g.
     ``ConfigGroupControl("Binning")``. ``label`` defaults to the group name.
     """
 
@@ -24,12 +24,24 @@ class ConfigGroupControl:
 class ContinuousFocusControl:
     """A continuous (hardware) autofocus on/off toggle in ``faro-napari``.
 
-    For ``PyMMCoreMicroscope.EXTRA_CONTROLS``. It drives the core's autofocus
+    For ``PyMMCoreMicroscope.NAPARI_CONTROLS``. It drives the core's autofocus
     device (Nikon PFS, Olympus ZDC, ...) with ``enableContinuousFocus`` and
     shows whether the focus is locked.
     """
 
     label: str = "Continuous focus"
+
+
+@dataclass(frozen=True)
+class DeviceControl:
+    """Every property of one device in ``faro-napari``.
+
+    For ``PyMMCoreMicroscope.NAPARI_CONTROLS``, e.g. ``DeviceControl("Camera")``.
+    Read-only properties are left out unless ``include_read_only`` is True.
+    """
+
+    device: str
+    include_read_only: bool = False
 
 
 class PyMMCoreMicroscope(AbstractMicroscope):
@@ -56,22 +68,21 @@ class PyMMCoreMicroscope(AbstractMicroscope):
 
     MICROMANAGER_PATH = "C:\\Program Files\\Micro-Manager-2.0"
     POWER_PROPERTIES: dict[str, tuple[str, str]] = {}
-    # (device, property) or (device, property, label) entries shown by the
-    # "Illumination Control" widget of ``faro-napari``. A property matches by
-    # exact name, else by name prefix (for names built at runtime). The label
-    # replaces the "device::property" text. None keeps napari-micromanager's
-    # widget, which shows every Intensity/Power/Level property.
-    LIGHT_PROPERTIES: list[tuple[str, ...]] | None = None
-    # More controls for the same dock, shown below the light properties. An
-    # entry is one of:
-    #   (device, property) or (device, property, label) -- a property, as above
-    #   ConfigGroupControl("Binning")  -- a preset dropdown for a config group
-    #   ContinuousFocusControl()       -- autofocus on/off with locked state
-    # With only EXTRA_CONTROLS set, napari-micromanager's light sliders stay
-    # above them. Missing devices, groups or autofocus are skipped with a
-    # warning. A ``_pfs_lock`` attribute on the scope, if set, is held for
-    # every autofocus access of the toggle.
-    EXTRA_CONTROLS: list = []
+    # What the "Illumination Control" dock of ``faro-napari`` shows, top to
+    # bottom. An entry is one of:
+    #   "Camera"                          -- a section heading
+    #   (device, property)                -- one property; the row reads
+    #   (device, property, label)            "device::property" or the label
+    #   ConfigGroupControl("Binning")     -- a preset dropdown for a config group
+    #   ContinuousFocusControl("PFS")     -- autofocus on/off with locked state
+    #   DeviceControl("Camera")           -- every property of one device
+    # A property name matches exactly, else as the prefix of a property (for
+    # names an adapter builds at runtime). Missing devices, properties, groups
+    # or autofocus are skipped with a warning. A ``_pfs_lock`` attribute on the
+    # scope, if set, is held for every autofocus access of the toggle. None
+    # keeps napari-micromanager's widget, which shows every
+    # Intensity/Power/Level property of the config.
+    NAPARI_CONTROLS: list | None = None
 
     def __init__(self):
         super().__init__()

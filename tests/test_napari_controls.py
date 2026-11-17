@@ -1,9 +1,8 @@
 """Controls of the "Illumination Control" dock of ``faro-napari``.
 
-The resolution of ``LIGHT_PROPERTIES`` and ``EXTRA_CONTROLS`` entries runs on
-a stub core. The widget test builds the dock offscreen on the Micro-Manager
-demo config in a subprocess, so its ``QApplication`` does not change the
-other tests.
+The resolution of ``NAPARI_CONTROLS`` entries runs on a stub core. The widget
+test builds the dock offscreen on the Micro-Manager demo config in a
+subprocess, so its ``QApplication`` does not change the other tests.
 """
 
 from __future__ import annotations
@@ -17,12 +16,12 @@ from pathlib import Path
 
 import pytest
 
-from faro.microscope.pymmcore import ConfigGroupControl, ContinuousFocusControl
-from faro.napari_launcher import (
-    _illumination_dock_factory,
-    _resolve_extra_controls,
-    _resolve_light_properties,
+from faro.microscope.pymmcore import (
+    ConfigGroupControl,
+    ContinuousFocusControl,
+    DeviceControl,
 )
+from faro.napari_launcher import _illumination_dock_factory, _resolve_controls
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -53,59 +52,71 @@ class StubCore:
         return self.autofocus
 
 
-def test_light_properties_unchanged():
-    rows = _resolve_light_properties(
+def test_properties_match_by_name_or_prefix():
+    rows = _resolve_controls(
         StubCore(),
         [("LED", "L.15", "LedEpi"), ("Camera", "Gain"), ("Nope", "X")],
     )
     assert rows == [
-        ("LED", "L.15 Intensity", "LedEpi"),
-        ("Camera", "Gain", "Camera::Gain"),
+        ("property", ("LED", "L.15 Intensity"), "LedEpi"),
+        ("property", ("Camera", "Gain"), "Camera::Gain"),
     ]
 
 
-def test_extra_controls_resolve_in_order():
-    rows = _resolve_extra_controls(
+def test_controls_resolve_in_order():
+    camera = DeviceControl("Camera")
+    rows = _resolve_controls(
         StubCore(),
         [
+            "Light",
+            ("LED", "L.15", "LedEpi"),
+            "Camera",
             ConfigGroupControl("Binning"),
+            camera,
             ContinuousFocusControl(),
-            ("Camera", "Gain", "Gain"),
             ConfigGroupControl("Binning", label="Bin"),
             ContinuousFocusControl("PFS"),
         ],
     )
     assert rows == [
+        ("heading", None, "Light"),
+        ("property", ("LED", "L.15 Intensity"), "LedEpi"),
+        ("heading", None, "Camera"),
         ("group", "Binning", "Binning"),
+        ("device", camera, "Camera"),
         ("focus", "PFS", "Continuous focus"),
-        ("property", ("Camera", "Gain"), "Gain"),
         ("group", "Binning", "Bin"),
         ("focus", "PFS", "PFS"),
     ]
 
 
-def test_missing_extra_controls_are_skipped_with_a_warning(caplog):
+def test_missing_controls_are_skipped_with_a_warning(caplog):
     with caplog.at_level(logging.WARNING, logger="faro.napari_launcher"):
-        rows = _resolve_extra_controls(
+        rows = _resolve_controls(
             StubCore(autofocus=""),
             [
                 ConfigGroupControl("NoSuchGroup"),
                 ConfigGroupControl("Empty"),
                 ContinuousFocusControl(),
+                DeviceControl("NoSuchDevice"),
                 ("Nope", "X"),
                 ("Camera", "NoSuchProperty"),
-                "not an entry",
+                42,
             ],
         )
     assert rows == []
-    assert len(caplog.records) == 6
+    assert len(caplog.records) == 7
 
 
-def test_no_attributes_keep_upstream_widget():
+def test_no_controls_keep_upstream_widget():
     class Plain:
         pass
 
+    class Empty:
+        NAPARI_CONTROLS = []
+
     assert _illumination_dock_factory(Plain()) is None
+    assert _illumination_dock_factory(Empty()) is None
 
 
 _WIDGET_SCRIPT = textwrap.dedent(
@@ -116,7 +127,11 @@ _WIDGET_SCRIPT = textwrap.dedent(
     from pymmcore_widgets import PresetsWidget, PropertyWidget
     from qtpy.QtWidgets import QApplication, QCheckBox, QLabel
 
-    from faro.microscope.pymmcore import ConfigGroupControl, ContinuousFocusControl
+    from faro.microscope.pymmcore import (
+        ConfigGroupControl,
+        ContinuousFocusControl,
+        DeviceControl,
+    )
     from faro.napari_launcher import _illumination_dock_factory
 
     app = QApplication([])
@@ -142,23 +157,33 @@ _WIDGET_SCRIPT = textwrap.dedent(
             self.release()
 
     class Scope:
-        LIGHT_PROPERTIES = [("Camera", "Gain", "Gain")]
-        EXTRA_CONTROLS = [
+        NAPARI_CONTROLS = [
+            "Light",
+            ("Camera", "Gain", "Gain"),
+            "Camera",
             ConfigGroupControl("Camera", label="Camera mode"),
             ContinuousFocusControl("Autofocus"),
             ("Camera", "Binning", "Binning"),
             ConfigGroupControl("Missing"),
+            DeviceControl("Dichroic"),
         ]
         _pfs_lock = CountingLock()
 
     scope = Scope()
     widget = _illumination_dock_factory(scope)(parent=None, mmcore=core)
     labels = [w.text() for w in widget.findChildren(QLabel)]
-    for text in ("Gain", "Camera mode", "Autofocus", "Binning"):
+    for text in ("Light", "Gain", "Camera", "Camera mode", "Autofocus", "Binning",
+                 "Dichroic"):
         assert text in labels, labels
     presets = widget.findChildren(PresetsWidget)
     assert len(presets) == 1
-    assert len(widget.findChildren(PropertyWidget)) == 2  # Gain, Binning
+    writable = [
+        p for p in core.getDevicePropertyNames("Dichroic")
+        if not core.isPropertyReadOnly("Dichroic", p)
+    ]
+    assert writable
+    # Gain, Binning, and one per writable Dichroic property.
+    assert len(widget.findChildren(PropertyWidget)) == 2 + len(writable)
 
     box = widget.findChildren(QCheckBox)[0]
     core.enableContinuousFocus(False)

@@ -831,27 +831,44 @@ class MyScope(PyMMCoreMicroscope):
 
 For DMD support, set up `self.dmd` in `__init__()`, see
 [`faro_pertzlab/moench.py`](https://github.com/pertzlab/faro-pertzlab/blob/main/src/faro_pertzlab/moench.py)
-for an example. To show only some light-source properties in the
-"Illumination Control" dock of `faro-napari`, list them in `LIGHT_PROPERTIES`
-as `(device, property, label)` tuples. `EXTRA_CONTROLS` adds more rows below
-them: a config group as a preset dropdown, a continuous focus (PFS, ZDC)
-on/off toggle that shows the locked state, or another property:
+for an example.
+
+`NAPARI_CONTROLS` sets what the "Illumination Control" dock of `faro-napari`
+shows, top to bottom. Without it, the dock shows napari-micromanager's default
+(every Intensity/Power/Level property of the config). An entry is one of:
+
+| Entry | Row |
+|-------|-----|
+| `"Camera"` | a section heading |
+| `(device, property)` or `(device, property, label)` | one property, any device |
+| `ConfigGroupControl("Binning")` | a preset dropdown for a config group |
+| `ContinuousFocusControl("PFS")` | continuous (hardware) autofocus on/off, with the locked state |
+| `DeviceControl("Camera")` | every property of one device (`include_read_only=True` adds the read-only ones) |
 
 ```python
-from faro.microscope.pymmcore import ConfigGroupControl, ContinuousFocusControl
+from faro.microscope.pymmcore import (
+    ConfigGroupControl,
+    ContinuousFocusControl,
+    DeviceControl,
+)
 
 class MyScope(PyMMCoreMicroscope):
-    LIGHT_PROPERTIES = [("LED1 Device", "L.15 Intensity", "LedEpi")]
-    EXTRA_CONTROLS = [
+    NAPARI_CONTROLS = [
+        "Light",
+        ("LED1 Device", "L.15 Intensity", "LedEpi"),
+        ("DiaLamp", "Intensity", "DiaLamp"),
+        "Camera",
         ConfigGroupControl("Binning"),
-        ContinuousFocusControl("PFS"),
         ("Camera", "Gain", "Gain"),
+        "Focus",
+        ContinuousFocusControl("PFS"),
     ]
 ```
 
-Missing devices, groups or autofocus devices are skipped with a warning. If
-the scope has a `_pfs_lock`, the focus toggle holds it for every autofocus
-access.
+A property name matches exactly, else as the prefix of a property (for names
+an adapter builds at runtime). Missing devices, properties, groups or
+autofocus devices are skipped with a warning. If the scope has a `_pfs_lock`,
+the focus toggle holds it for every autofocus access.
 
 ## Installation
 

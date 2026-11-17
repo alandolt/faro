@@ -239,7 +239,7 @@ def _resolve_property(core, loaded, device, name, label):
     shown. An unloaded device or an unmatched name is skipped with a warning.
     """
     if device not in loaded:
-        logger.warning("Light widget: device %r is not loaded.", device)
+        logger.warning("NAPARI_CONTROLS: device %r is not loaded.", device)
         return None
     props = core.getDevicePropertyNames(device)
     match = (
@@ -247,7 +247,7 @@ def _resolve_property(core, loaded, device, name, label):
     )
     if match is None:
         logger.warning(
-            "Light widget: %r has no property %r. Properties: %s",
+            "NAPARI_CONTROLS: %r has no property %r. Properties: %s",
             device,
             name,
             ", ".join(props),
@@ -256,54 +256,59 @@ def _resolve_property(core, loaded, device, name, label):
     return device, match, label or f"{device}::{match}"
 
 
-def _resolve_light_properties(core, wanted) -> list[tuple[str, str, str]]:
-    """Map ``(device, name[, label])`` entries to ``(device, property, label)``.
+def _resolve_controls(core, entries) -> list[tuple[str, Any, str]]:
+    """Map ``NAPARI_CONTROLS`` entries to ``(kind, target, label)`` rows.
 
-    See ``_resolve_property`` for the matching rules.
-    """
-    loaded = set(core.getLoadedDevices())
-    found = []
-    for device, name, *rest in wanted:
-        prop = _resolve_property(core, loaded, device, name, rest[0] if rest else None)
-        if prop is not None:
-            found.append(prop)
-    return found
+    ``kind`` is one of:
 
+    - ``"heading"``: target None, label the heading text;
+    - ``"property"``: target ``(device, property)``;
+    - ``"group"``: target the config group;
+    - ``"focus"``: target the autofocus device;
+    - ``"device"``: target the ``DeviceControl``, label the device.
 
-def _resolve_extra_controls(core, entries) -> list[tuple[str, Any, str]]:
-    """Map ``EXTRA_CONTROLS`` entries to ``(kind, target, label)`` rows.
-
-    ``kind`` is ``"property"`` (target ``(device, property)``), ``"group"``
-    (target: the config group) or ``"focus"`` (target: the autofocus device).
     A missing device, property, group (or a group without presets), a missing
     autofocus device or an unknown entry is skipped with a warning.
     """
-    from faro.microscope.pymmcore import ConfigGroupControl, ContinuousFocusControl
+    from faro.microscope.pymmcore import (
+        ConfigGroupControl,
+        ContinuousFocusControl,
+        DeviceControl,
+    )
 
     loaded = set(core.getLoadedDevices())
     rows = []
     for entry in entries:
-        if isinstance(entry, ConfigGroupControl):
+        if isinstance(entry, str):
+            rows.append(("heading", None, entry))
+        elif isinstance(entry, ConfigGroupControl):
             groups = core.getAvailableConfigGroups()
             if entry.group not in groups:
                 logger.warning(
-                    "Light widget: no config group %r. Groups: %s",
+                    "NAPARI_CONTROLS: no config group %r. Groups: %s",
                     entry.group,
                     ", ".join(groups),
                 )
             elif not core.getAvailableConfigs(entry.group):
-                logger.warning("Light widget: group %r has no presets.", entry.group)
+                logger.warning("NAPARI_CONTROLS: group %r has no presets.", entry.group)
             else:
                 rows.append(("group", entry.group, entry.label or entry.group))
         elif isinstance(entry, ContinuousFocusControl):
             device = core.getAutoFocusDevice()
             if not device:
                 logger.warning(
-                    "Light widget: no autofocus device is set. Skipping %r.",
+                    "NAPARI_CONTROLS: no autofocus device is set. Skipping %r.",
                     entry.label,
                 )
             else:
                 rows.append(("focus", device, entry.label))
+        elif isinstance(entry, DeviceControl):
+            if entry.device not in loaded:
+                logger.warning(
+                    "NAPARI_CONTROLS: device %r is not loaded.", entry.device
+                )
+            else:
+                rows.append(("device", entry, entry.device))
         elif isinstance(entry, (tuple, list)) and len(entry) in (2, 3):
             device, name, *rest = entry
             prop = _resolve_property(
@@ -312,7 +317,7 @@ def _resolve_extra_controls(core, entries) -> list[tuple[str, Any, str]]:
             if prop is not None:
                 rows.append(("property", prop[:2], prop[2]))
         else:
-            logger.warning("Light widget: unknown control entry %r.", entry)
+            logger.warning("NAPARI_CONTROLS: unknown entry %r.", entry)
     return rows
 
 
@@ -374,54 +379,34 @@ def _continuous_focus_toggle(mmcore, lock=None, parent=None):
     return widget
 
 
-def _illumination_dock_factory(mic, upstream=None):
-    """Return the "Illumination Control" widget factory for ``mic``, or None.
+def _illumination_dock_factory(mic):
+    """Return the "Illumination Control" widget class for ``mic``, or None.
 
-    The dock shows ``mic.LIGHT_PROPERTIES`` (or, when that is unset, the
-    ``upstream`` widget, if given), then ``mic.EXTRA_CONTROLS``. None when the
-    scope sets neither attribute. The factory is called as
+    The widget shows ``mic.NAPARI_CONTROLS`` top to bottom. None when the
+    scope does not set it. The class is called as
     ``factory(parent=..., mmcore=...)``.
     """
-    lights = list(getattr(mic, "LIGHT_PROPERTIES", None) or [])
-    extras = list(getattr(mic, "EXTRA_CONTROLS", None) or [])
-    if not lights and not extras:
+    entries = list(getattr(mic, "NAPARI_CONTROLS", None) or [])
+    if not entries:
         return None
 
+    import re
+
     from pymmcore_widgets import PresetsWidget, PropertiesWidget, PropertyWidget
-    from qtpy.QtWidgets import QFrame, QLabel, QSizePolicy, QVBoxLayout, QWidget
+    from qtpy.QtGui import QFont
+    from qtpy.QtWidgets import QLabel, QSizePolicy
 
     lock = getattr(mic, "_pfs_lock", None)
 
-    class LightWidget(PropertiesWidget):
-        """Sliders for a fixed list of light-source properties."""
-
-        def __init__(self, *, parent=None, mmcore=None):
-            # PropertiesWidget.__init__ calls rebuild(), which reads this.
-            self._wanted = lights
-            super().__init__(parent=parent, mmcore=mmcore)
-            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-        def rebuild(self) -> None:
-            layout = self.layout()
-            while layout.count():
-                layout.takeAt(0).widget().deleteLater()
-            for row, (dev, prop, label) in enumerate(
-                _resolve_light_properties(self._mmc, self._wanted)
-            ):
-                name = QLabel(label)
-                name.setToolTip(f"{dev}::{prop}")
-                value = PropertyWidget(dev, prop, mmcore=self._mmc)
-                layout.addWidget(name, row, 0)
-                layout.addWidget(value, row, 1)
-
-    class ExtraControlsWidget(PropertiesWidget):
-        """Property, config group and continuous focus rows.
+    class ControlsWidget(PropertiesWidget):
+        """The rows of ``NAPARI_CONTROLS``.
 
         Rebuilt, like ``PropertiesWidget``, when a config is loaded.
         """
 
         def __init__(self, *, parent=None, mmcore=None):
-            self._wanted = extras
+            # PropertiesWidget.__init__ calls rebuild(), which reads this.
+            self._wanted = entries
             super().__init__(parent=parent, mmcore=mmcore)
             self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -429,9 +414,27 @@ def _illumination_dock_factory(mic, upstream=None):
             layout = self.layout()
             while layout.count():
                 layout.takeAt(0).widget().deleteLater()
-            rows = _resolve_extra_controls(self._mmc, self._wanted)
-            for row, (kind, target, label) in enumerate(rows):
+            for row, (kind, target, label) in enumerate(
+                _resolve_controls(self._mmc, self._wanted)
+            ):
                 name = QLabel(label)
+                if kind == "heading":
+                    font = QFont(name.font())
+                    font.setBold(True)
+                    name.setFont(font)
+                    layout.addWidget(name, row, 0, 1, 2)
+                    continue
+                if kind == "device":
+                    # Every property of the device, each with its own label.
+                    value = PropertiesWidget(
+                        device_label=re.compile(f"^{re.escape(target.device)}$"),
+                        is_read_only=None if target.include_read_only else False,
+                        mmcore=self._mmc,
+                    )
+                    name.setToolTip(f"all properties of {target.device}")
+                    layout.addWidget(name, row, 0)
+                    layout.addWidget(value, row, 1)
+                    continue
                 if kind == "property":
                     name.setToolTip("::".join(target))
                     value = PropertyWidget(*target, mmcore=self._mmc)
@@ -444,42 +447,23 @@ def _illumination_dock_factory(mic, upstream=None):
                 layout.addWidget(name, row, 0)
                 layout.addWidget(value, row, 1)
 
-    if not extras:
-        return LightWidget
-    light_cls = LightWidget if lights else upstream
-
-    def factory(*, parent=None, mmcore=None):
-        widget = QWidget(parent)
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        if light_cls is not None:
-            layout.addWidget(light_cls(parent=widget, mmcore=mmcore))
-            line = QFrame()
-            line.setFrameShape(QFrame.Shape.HLine)
-            layout.addWidget(line)
-        layout.addWidget(ExtraControlsWidget(parent=widget, mmcore=mmcore))
-        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        return widget
-
-    return factory
+    return ControlsWidget
 
 
 def _replace_illumination_widget(mic) -> None:
-    """Fill the "Illumination Control" dock from the scope's attributes.
+    """Fill the "Illumination Control" dock from ``mic.NAPARI_CONTROLS``.
 
     napari-micromanager's widget shows every Intensity/Power/Level property
-    of the config. A scope with ``LIGHT_PROPERTIES`` gets only those, and
-    ``EXTRA_CONTROLS`` adds config group, continuous focus and other property
-    rows below them (see ``PyMMCoreMicroscope``). Like
-    ``_add_pertzlab_widgets``, this must run before ``MainWindow`` is created.
+    of the config. A scope with ``NAPARI_CONTROLS`` gets exactly the rows it
+    lists (see ``PyMMCoreMicroscope``). Like ``_add_pertzlab_widgets``, this
+    must run before ``MainWindow`` is created.
     """
     from napari_micromanager._gui_objects._toolbar import DOCK_WIDGETS
 
     key = "Illumination Control"
-    upstream, icon_name = DOCK_WIDGETS[key]
-    factory = _illumination_dock_factory(mic, upstream)
+    factory = _illumination_dock_factory(mic)
     if factory is not None:
-        DOCK_WIDGETS[key] = (factory, icon_name)
+        DOCK_WIDGETS[key] = (factory, DOCK_WIDGETS[key][1])
 
 
 FARO_ICON = Path(__file__).parent / "resources" / "faro_icon.png"
