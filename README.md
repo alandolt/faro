@@ -833,7 +833,25 @@ For DMD support, set up `self.dmd` in `__init__()`, see
 [`faro_pertzlab/moench.py`](https://github.com/pertzlab/faro-pertzlab/blob/main/src/faro_pertzlab/moench.py)
 for an example. To show only some light-source properties in the
 "Illumination Control" dock of `faro-napari`, list them in `LIGHT_PROPERTIES`
-as `(device, property, label)` tuples.
+as `(device, property, label)` tuples. `EXTRA_CONTROLS` adds more rows below
+them: a config group as a preset dropdown, a continuous focus (PFS, ZDC)
+on/off toggle that shows the locked state, or another property:
+
+```python
+from faro.microscope.pymmcore import ConfigGroupControl, ContinuousFocusControl
+
+class MyScope(PyMMCoreMicroscope):
+    LIGHT_PROPERTIES = [("LED1 Device", "L.15 Intensity", "LedEpi")]
+    EXTRA_CONTROLS = [
+        ConfigGroupControl("Binning"),
+        ContinuousFocusControl("PFS"),
+        ("Camera", "Gain", "Gain"),
+    ]
+```
+
+Missing devices, groups or autofocus devices are skipped with a warning. If
+the scope has a `_pfs_lock`, the focus toggle holds it for every autofocus
+access.
 
 ## Installation
 
