@@ -231,6 +231,30 @@ def _add_pertzlab_widgets(mic) -> None:
         DOCK_WIDGETS[label] = (factory, getattr(MDI6, icon_name))
 
 
+def _hide_docks_on_close(win) -> None:
+    """Make the close button of the plugin's dock widgets hide the dock.
+
+    napari's close button removes the dock and deletes it. The plugin keeps
+    each dock in ``win._dock_widgets`` and calls ``show()`` on it when its
+    toolbar button is clicked again, which then raises "wrapped C/C++ object
+    ... has been deleted". The plugin sets ``_close_btn = False`` to drop the
+    button, but napari has built the title bar by then, so it stays.
+
+    Hiding keeps the widget and its state, so a reopened MDA dock still has
+    its sequence.
+    """
+    add_dock_widget = win._add_dock_widget
+
+    def add_hiding_dock_widget(*args, **kwargs):
+        dock = add_dock_widget(*args, **kwargs)
+        # The title bar looks up destroyOnClose on each click.
+        if hasattr(dock, "destroyOnClose"):
+            dock.destroyOnClose = dock.hide
+        return dock
+
+    win._add_dock_widget = add_hiding_dock_widget
+
+
 def _resolve_property(core, loaded, device, name, label):
     """Return ``(device, property, label)`` for one property entry, or None.
 
@@ -547,6 +571,7 @@ def main(args: Sequence[str] | None = None) -> None:
     _replace_illumination_widget(mic)
     viewer = napari.Viewer()
     win = MainWindow(viewer, mmcore=mic.mmc)
+    _hide_docks_on_close(win)
     dw = viewer.window.add_dock_widget(win, name="MicroManager", area="top")
     if hasattr(dw, "_close_btn"):
         dw._close_btn = False

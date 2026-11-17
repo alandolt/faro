@@ -220,3 +220,52 @@ def test_dock_widget_offscreen():
         timeout=120,
     )
     assert result.returncode == 0 and "OK" in result.stdout, result.stderr
+
+
+_CLOSE_SCRIPT = textwrap.dedent(
+    """
+    from napari._qt.widgets.qt_viewer_dock_widget import QtViewerDockWidget
+    from qtpy import sip
+    from qtpy.QtWidgets import QApplication, QWidget
+
+    from faro.napari_launcher import _hide_docks_on_close
+
+    app = QApplication([])
+
+    class QtViewer:
+        # destroyOnClose only removes the dock from a napari Viewer.
+        viewer = None
+
+    class Window:
+        def _add_dock_widget(self, widget, name, floating=False, tabify=False):
+            return QtViewerDockWidget(self.qt_viewer, widget, name=name)
+
+    win = Window()
+    win.qt_viewer = QtViewer()
+    _hide_docks_on_close(win)
+    dock = win._add_dock_widget(QWidget(), "Illumination Control")
+    dock.show()
+    dock.title.close_button.click()
+    app.processEvents()
+    assert not sip.isdeleted(dock)
+    assert not dock.isVisible(), "the close button did not hide the dock"
+    dock.show()
+    assert dock.isVisible()
+    print("OK")
+    """
+)
+
+
+def test_dock_close_button_hides_the_dock():
+    # napari's close button deletes the dock, but napari-micromanager keeps it
+    # and shows it again on the next toolbar click.
+    pytest.importorskip("napari")
+    result = subprocess.run(
+        [sys.executable, "-c", _CLOSE_SCRIPT],
+        cwd=REPO,
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0 and "OK" in result.stdout, result.stderr
