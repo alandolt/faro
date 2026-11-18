@@ -23,7 +23,8 @@ Inside the napari console, ``mic`` and ``mmcore`` are available, so e.g.
 
 The widgets in ``PERTZLAB_WIDGETS`` get a button in the plugin's toolbar. They
 come from the pertzlab branch of pymmcore-widgets, installed with
-``uv sync --extra pertzlab-widgets``.
+``uv sync --extra pertzlab-widgets``. A scope picks a subset with
+``NAPARI_WIDGETS`` (see ``PyMMCoreMicroscope``).
 """
 
 from __future__ import annotations
@@ -43,8 +44,8 @@ logger = logging.getLogger(__name__)
 
 # Widgets from the pertzlab pymmcore-widgets branch that get a button in the
 # napari-micromanager toolbar: toolbar label -> (pymmcore_widgets class name,
-# MDI6 icon name). Uncomment an entry to add its button, comment it out to
-# drop it.
+# MDI6 icon name). Every scope gets all of them unless it lists the labels it
+# wants in ``NAPARI_WIDGETS``.
 PERTZLAB_WIDGETS = {
     "Stage Map": ("StageMapWidget", "map_marker_multiple"),
     "Continuous Focus": ("ContinuousFocusWidget", "focus_auto"),
@@ -189,18 +190,44 @@ def _continuous_focus_widget(mic, *, parent, mmcore):
     )
 
 
+def _scope_widgets(mic) -> dict[str, tuple[str, str]]:
+    """The ``PERTZLAB_WIDGETS`` entries the scope asks for in ``NAPARI_WIDGETS``.
+
+    None (or no attribute) means all of them. Labels that are not in
+    ``PERTZLAB_WIDGETS`` are skipped with a warning.
+    """
+    wanted = getattr(mic, "NAPARI_WIDGETS", None)
+    if wanted is None:
+        return dict(PERTZLAB_WIDGETS)
+    for label in wanted:
+        if label not in PERTZLAB_WIDGETS:
+            logger.warning(
+                "NAPARI_WIDGETS: unknown widget %r. Known: %s",
+                label,
+                ", ".join(PERTZLAB_WIDGETS),
+            )
+    return {
+        label: PERTZLAB_WIDGETS[label] for label in wanted if label in PERTZLAB_WIDGETS
+    }
+
+
 def _add_pertzlab_widgets(mic) -> None:
-    """Add the ``PERTZLAB_WIDGETS`` buttons to the napari-micromanager toolbar.
+    """Add the scope's ``PERTZLAB_WIDGETS`` buttons to the plugin's toolbar.
 
     The plugin builds its toolbar buttons from its module-level
     ``DOCK_WIDGETS`` when ``MainWindow`` is created, so this must run before
     that. A widget is built the first time its button is clicked, as
     ``factory(parent=window, mmcore=core)``.
 
-    Without the ``pertzlab-widgets`` extra, pymmcore_widgets has none of these
-    widgets and the plugin runs as is. A widget missing from a pertzlab build
-    is skipped with a warning.
+    Only the widgets in the scope's ``NAPARI_WIDGETS`` are added (all of them
+    when it is None). Without the ``pertzlab-widgets`` extra,
+    pymmcore_widgets has none of these widgets and the plugin runs as is. A
+    widget missing from a pertzlab build is skipped with a warning.
     """
+    widgets = _scope_widgets(mic)
+    if not widgets:
+        return
+
     import pymmcore_widgets
     from fonticon_mdi6 import MDI6
     from napari_micromanager._gui_objects._toolbar import DOCK_WIDGETS
@@ -219,7 +246,7 @@ def _add_pertzlab_widgets(mic) -> None:
         "StageMapWidget": _stage_map_widget,
         "ContinuousFocusWidget": partial(_continuous_focus_widget, mic),
     }
-    for label, (class_name, icon_name) in PERTZLAB_WIDGETS.items():
+    for label, (class_name, icon_name) in widgets.items():
         if not hasattr(pymmcore_widgets, class_name):
             logger.warning(
                 "pymmcore_widgets has no %s. Skipping the %r button.",

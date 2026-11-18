@@ -83,6 +83,11 @@ class PyMMCoreMicroscope(AbstractMicroscope):
     # keeps napari-micromanager's widget, which shows every
     # Intensity/Power/Level property of the config.
     NAPARI_CONTROLS: list | None = None
+    # Which toolbar buttons of the pertzlab pymmcore-widgets build
+    # (``faro.napari_launcher.PERTZLAB_WIDGETS``) ``faro-napari`` adds for this
+    # scope, by label, e.g. ``["Stage Map"]``. None adds all of them, ``[]``
+    # none. Without the pertzlab build there are no such buttons either way.
+    NAPARI_WIDGETS: list[str] | None = None
 
     def __init__(self):
         super().__init__()

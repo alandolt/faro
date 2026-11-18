@@ -870,6 +870,17 @@ an adapter builds at runtime). Missing devices, properties, groups or
 autofocus devices are skipped with a warning. If the scope has a `_pfs_lock`,
 the focus toggle holds it for every autofocus access.
 
+With the pertzlab build of pymmcore-widgets (`uv sync --extra pertzlab-widgets`),
+`faro-napari` adds toolbar buttons for its widgets (`PERTZLAB_WIDGETS` in
+`faro/napari_launcher.py`: "Stage Map", "Continuous Focus"). `NAPARI_WIDGETS`
+picks the ones a scope gets; without it, the scope gets all of them:
+
+```python
+class MyScope(PyMMCoreMicroscope):
+    NAPARI_WIDGETS = ["Stage Map"]  # no continuous focus on this stand
+    # NAPARI_WIDGETS = []           # none
+```
+
 ## Installation
 
 This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
