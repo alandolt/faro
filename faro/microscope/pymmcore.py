@@ -1,5 +1,6 @@
 import atexit
 import contextlib
+import os
 import threading
 import weakref
 from dataclasses import dataclass
@@ -66,6 +67,8 @@ class PyMMCoreMicroscope(AbstractMicroscope):
     than re-register their own hooks.
     """
 
+    # This scope's Micro-Manager folder. ``micromanager_dir()`` decides which
+    # folder is used; this one comes last.
     MICROMANAGER_PATH = "C:\\Program Files\\Micro-Manager-2.0"
     POWER_PROPERTIES: dict[str, tuple[str, str]] = {}
     # What the "Illumination Control" dock of ``faro-napari`` shows, top to
@@ -88,6 +91,20 @@ class PyMMCoreMicroscope(AbstractMicroscope):
     # scope, by label, e.g. ``["Stage Map"]``. None adds all of them, ``[]``
     # none. Without the pertzlab build there are no such buttons either way.
     NAPARI_WIDGETS: list[str] | None = None
+
+    def micromanager_dir(self, path: str | None = None) -> str:
+        """The Micro-Manager folder to use, in this order:
+
+        1. ``path``, given by hand (``--kwarg micromanager_path=...``);
+        2. the ``MICROMANAGER_PATH`` environment variable. The launchers of the
+           offline bundle set it to a Micro-Manager folder next to the bundle
+           if it is not set already;
+        3. the class's ``MICROMANAGER_PATH``.
+
+        Create the core with this folder (``CMMCorePlus(folder)``): without a
+        folder, pymmcore-plus prefers the environment variable over ``path``.
+        """
+        return path or os.environ.get("MICROMANAGER_PATH") or self.MICROMANAGER_PATH
 
     def __init__(self):
         super().__init__()
