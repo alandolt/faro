@@ -269,3 +269,57 @@ def test_dock_close_button_hides_the_dock():
         timeout=120,
     )
     assert result.returncode == 0 and "OK" in result.stdout, result.stderr
+
+
+def test_mda_handler_slots_run_on_main_thread_in_order():
+    """Slots of the plugin's MDA handler run on the main thread, in order.
+
+    With psygnal, MDA events are sent on the MDA thread. The plugin's handler
+    expects them on the GUI thread in order, as the Qt backend delivers them;
+    otherwise the first frame is lost (see
+    ``_deliver_mda_handler_on_main_thread``).
+    """
+    import threading
+    from types import SimpleNamespace
+
+    from psygnal import Signal, SignalGroup, emit_queued
+
+    from faro.napari_launcher import _deliver_mda_handler_on_main_thread
+
+    class Events(SignalGroup):
+        sequenceStarted = Signal(object)
+        frameReady = Signal(object, object)
+        sequenceFinished = Signal(object)
+
+    events = Events()
+    calls = []
+
+    def record(name):
+        def slot(*args):
+            calls.append((name, threading.current_thread() is threading.main_thread()))
+
+        return slot
+
+    connections = [
+        (events.frameReady, record("frame")),
+        (events.sequenceStarted, record("started")),
+        (events.sequenceFinished, record("finished")),
+    ]
+    for signal, slot in connections:
+        signal.connect(slot)
+    handler = SimpleNamespace(_connections=connections)
+    win = SimpleNamespace(_core_link=SimpleNamespace(_mda_handler=handler))
+
+    _deliver_mda_handler_on_main_thread(win)
+
+    def run():
+        events.sequenceStarted.emit("seq")
+        events.frameReady.emit("img", "event")
+        events.sequenceFinished.emit("seq")
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    worker.join()
+    assert calls == []
+    emit_queued()
+    assert calls == [("started", True), ("frame", True), ("finished", True)]

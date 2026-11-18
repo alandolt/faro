@@ -255,6 +255,37 @@ def _hide_docks_on_close(win) -> None:
     win._add_dock_widget = add_hiding_dock_widget
 
 
+def _deliver_mda_handler_on_main_thread(win) -> None:
+    """Run the slots of the plugin's MDA handler on the GUI thread, in order.
+
+    The plugin's ``_NapariMDAHandler`` is written for the Qt signal backend,
+    which delivers ``sequenceStarted``, ``frameReady`` and
+    ``sequenceFinished`` on the GUI thread in the order they were sent. It is
+    not a ``QObject``, so ``deliver_gui_slots_on_main_thread`` leaves its
+    slots on the MDA thread. There, two things go wrong:
+
+    - ``_on_mda_started`` is only posted to the GUI thread, but frames are
+      queued on the MDA thread at once. When it runs, it replaces the frame
+      queue, so the first frame is lost and stays blank in the layer.
+    - ``_on_mda_finished`` resets ``viewer.dims`` from the MDA thread, which
+      updates napari's widgets off the GUI thread.
+
+    The handler's connections are made again with ``thread="main"``. faro's
+    own frame callbacks are separate connections and stay on the MDA thread.
+    Call this only when the core's signals are psygnal signals. A core
+    installed later by the plugin (``set_core``) gets a new handler that
+    keeps the plain connections.
+    """
+    handler = getattr(getattr(win, "_core_link", None), "_mda_handler", None)
+    connections = getattr(handler, "_connections", None)
+    if not connections:
+        logger.warning("napari-micromanager MDA handler not found; not rerouted.")
+        return
+    for signal, slot in connections:
+        signal.disconnect(slot)
+        signal.connect(slot, thread="main")
+
+
 def _resolve_property(core, loaded, device, name, label):
     """Return ``(device, property, label)`` for one property entry, or None.
 
@@ -562,7 +593,8 @@ def main(args: Sequence[str] | None = None) -> None:
     # not change.
     get_qapp()
     _set_faro_app_id()
-    if not deliver_gui_slots_on_main_thread(mic.mmc):
+    routed = deliver_gui_slots_on_main_thread(mic.mmc)
+    if not routed:
         logger.info(
             "Core events (%s) are not routed to the GUI thread.",
             type(mic.mmc.events).__name__,
@@ -572,6 +604,8 @@ def main(args: Sequence[str] | None = None) -> None:
     viewer = napari.Viewer()
     win = MainWindow(viewer, mmcore=mic.mmc)
     _hide_docks_on_close(win)
+    if routed:
+        _deliver_mda_handler_on_main_thread(win)
     dw = viewer.window.add_dock_widget(win, name="MicroManager", area="top")
     if hasattr(dw, "_close_btn"):
         dw._close_btn = False
