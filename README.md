@@ -881,6 +881,17 @@ class MyScope(PyMMCoreMicroscope):
     # NAPARI_WIDGETS = []           # none
 ```
 
+In a notebook, `open_napari` opens napari-micromanager with the same setup
+(controls dock, toolbar buttons, GUI-thread slots) on a scope you built
+yourself. Do not run `faro-napari` at the same time:
+
+```python
+from faro.napari_launcher import open_napari
+
+mic = Ti2E()
+viewer, mm_widget = open_napari(mic)
+```
+
 ## Installation
 
 This project uses [uv](https://docs.astral.sh/uv/) for dependency management.

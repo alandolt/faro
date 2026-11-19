@@ -580,6 +580,70 @@ def _set_faro_icon(viewer) -> None:
     viewer.window._qt_window.setWindowIcon(icon)
 
 
+def open_napari(mic, viewer=None):
+    """Open napari-micromanager on the core of ``mic``, set up as in ``faro-napari``.
+
+    For notebooks and scripts that build the microscope themselves::
+
+        from faro.napari_launcher import open_napari
+
+        mic = Ti2E()
+        viewer, mm_widget = open_napari(mic)
+
+    Compared with ``MainWindow(viewer, mmcore=mic.mmc)``, this also:
+
+    - fills the "Illumination Control" dock from ``mic.NAPARI_CONTROLS``;
+    - adds the toolbar buttons of ``mic.NAPARI_WIDGETS`` (pertzlab build of
+      pymmcore-widgets);
+    - runs the widgets' core-event slots on the GUI thread (psygnal backend);
+    - lets ``getImage()`` be read more than once per ``snapImage()``;
+    - makes the close button of the plugin's docks hide them.
+
+    ``viewer`` is the napari viewer to dock into; a new one when None. Call
+    it on the main thread. In Jupyter, napari enables the Qt event loop
+    (``%gui qt``) when the viewer is created. Returns ``(viewer, window)``.
+    The event loop is not started (``faro-napari`` calls ``napari.run()``)
+    and nothing is torn down when the window closes.
+    """
+    import napari
+    from napari.qt import get_qapp
+    from napari_micromanager.main_window import MainWindow
+
+    from faro.core.qt import deliver_gui_slots_on_main_thread
+
+    # Once per core: a second call (a re-run notebook cell) must not wrap the
+    # cache in another cache.
+    if not getattr(mic.mmc, "_faro_snap_cache", False):
+        _cache_snapped_image(mic.mmc)
+        mic.mmc._faro_snap_cache = True
+
+    # psygnal delivers the core's events on the thread that sends them (the
+    # MMCore notification thread, the MDA thread). The widgets connect after
+    # this call, so their slots run on the GUI thread; faro's callbacks do
+    # not change.
+    get_qapp()
+    routed = deliver_gui_slots_on_main_thread(mic.mmc)
+    if not routed:
+        logger.info(
+            "Core events (%s) are not routed to the GUI thread.",
+            type(mic.mmc.events).__name__,
+        )
+    _add_pertzlab_widgets(mic)
+    _replace_illumination_widget(mic)
+    if viewer is None:
+        viewer = napari.Viewer()
+    win = MainWindow(viewer, mmcore=mic.mmc)
+    _hide_docks_on_close(win)
+    if routed:
+        _deliver_mda_handler_on_main_thread(win)
+    # No name=: a named dock of the napari-micromanager window crashes.
+    dw = viewer.window.add_dock_widget(win, area="top")
+    if hasattr(dw, "_close_btn"):
+        dw._close_btn = False
+    _set_faro_icon(viewer)
+    return viewer, win
+
+
 def main(args: Sequence[str] | None = None) -> None:
     """Build the microscope, then run napari-micromanager on its core."""
     parser = argparse.ArgumentParser(
@@ -604,40 +668,16 @@ def main(args: Sequence[str] | None = None) -> None:
     except LookupError as e:
         parser.error(str(e))
     mic = cls(**dict(parse_kwarg(item) for item in parsed_args.kwarg))
-    _cache_snapped_image(mic.mmc)
 
     # Imported only after the microscope is built: pymmcore_widgets sets
     # PYMM_SIGNALS_BACKEND=qt when unset, and faro needs the psygnal backend.
     import napari
     from napari.qt import get_qapp
-    from napari_micromanager.main_window import MainWindow
 
-    from faro.core.qt import deliver_gui_slots_on_main_thread
-
-    # psygnal delivers the core's events on the thread that sends them (the
-    # MMCore notification thread, the MDA thread). The widgets connect after
-    # this call, so their slots run on the GUI thread; faro's callbacks do
-    # not change.
     get_qapp()
     _set_faro_app_id()
-    routed = deliver_gui_slots_on_main_thread(mic.mmc)
-    if not routed:
-        logger.info(
-            "Core events (%s) are not routed to the GUI thread.",
-            type(mic.mmc.events).__name__,
-        )
-    _add_pertzlab_widgets(mic)
-    _replace_illumination_widget(mic)
-    viewer = napari.Viewer()
-    win = MainWindow(viewer, mmcore=mic.mmc)
-    _hide_docks_on_close(win)
-    if routed:
-        _deliver_mda_handler_on_main_thread(win)
-    dw = viewer.window.add_dock_widget(win, name="MicroManager", area="top")
-    if hasattr(dw, "_close_btn"):
-        dw._close_btn = False
+    viewer, _ = open_napari(mic)
     viewer.update_console({"mic": mic, "mmcore": mic.mmc})
-    _set_faro_icon(viewer)
     napari.run()
 
     # The window is closed, but its widgets are still connected to the core.
