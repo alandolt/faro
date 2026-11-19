@@ -57,6 +57,27 @@ runner, DMD path and napari GUI) and asserts the results. Run all cells
 in Jupyter after changes to the Controller, Analyzer, writers or
 reanalysis. It takes about 2 minutes.
 
+## Running notebooks with napari outside pytest
+
+`test_examples.py` drops the `gui` cells, so napari never starts there.
+A notebook that opens napari (`open_napari(mic)` or `napari.Viewer()`)
+and is executed by a script (nbclient, `jupyter nbconvert --execute`,
+`jupyter_client`) needs one of these on Windows with ipykernel 7.4:
+
+- a pause of about 3 s before each cell, or
+- ipykernel 6: `uv run --with "ipykernel<7" ...`.
+
+Without them, the cell after the one that starts the Qt event loop
+(`%gui qt`, done by napari) gets no reply: the kernel is alive but hangs,
+and the executor reports a cell timeout. Measured on 2026-11-19 with a bare
+`%gui qt` followed by `1+1`: 4 of 4 runs hung with no pause, 4 of 4 passed
+with 3 s, 6 of 6 passed on ipykernel 6. A full faro-aoki notebook (napari,
+MDA dock, 9-event run) passed on ipykernel 7.4 with 3 s pauses.
+
+This does not happen when a person runs the cells by hand, so the
+notebooks need no change and ipykernel is not pinned. Do not read such a
+timeout as a bug in the notebook.
+
 ## What the built-in scenes look like
 
 ![CircleScene](assets/scene_circle.png)
