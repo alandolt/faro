@@ -50,7 +50,9 @@ class AbstractMicroscope:
     )
 
     dmd = None  # optional DMD device
-    use_autofocus_event = False  # optional autofocus
+    # Run the hardware autofocus (HardwareAutofocus action) each time the
+    # stage goes to a new XY position, and once at the start of a run.
+    USE_AUTOFOCUS_EVENT = False
     dmd_needs_to_be_waken = False  # optional DMD wake
 
     def __init__(self):
