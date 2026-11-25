@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
+import warnings
 from dataclasses import asdict, dataclass
 import enum
 from typing import Any, Generic, Iterable, Iterator, Literal, Optional, TypeVar, Union
@@ -403,7 +404,7 @@ class StimMode(str, enum.Enum):
 # ---------------------------------------------------------------------------
 # RTMEvent — extended MDAEvent with multi-channel + stimulation support
 # ---------------------------------------------------------------------------
-from useq import Axis, MDAEvent, MDASequence
+from useq import Axis, HardwareAutofocus, MDAEvent, MDASequence
 from faro.core._useq_compat import SLMImage
 
 
@@ -737,6 +738,18 @@ class RTMSequence(MDASequence):
             )
         return self
 
+    @model_validator(mode="after")
+    def _warn_autofocus_plan(self) -> RTMSequence:
+        if self.autofocus_plan is not None:
+            warnings.warn(
+                "RTMSequence ignores autofocus_plan. Set USE_AUTOFOCUS_EVENT = "
+                "True on the microscope to run the autofocus at each new "
+                "stage position.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return self
+
     def __len__(self) -> int:
         """Number of RTMEvents (unique (t, p) groups) in this sequence."""
         return sum(1 for _ in self.iter_events())
@@ -760,6 +773,12 @@ class RTMSequence(MDASequence):
         # Call the parent method directly to avoid recursing back into
         # this override (MDASequence.__iter__ dispatches via self).
         for mda_ev in MDASequence.iter_events(self):
+            # An autofocus_plan adds HardwareAutofocus events with the channel
+            # of the next image. Grouped like images, they would acquire that
+            # channel a second time. Faro runs the autofocus through
+            # USE_AUTOFOCUS_EVENT on the microscope instead.
+            if isinstance(mda_ev.action, HardwareAutofocus):
+                continue
             t = mda_ev.index.get("t", 0)
             p = mda_ev.index.get("p", 0)
             key = (t, p)

@@ -3,6 +3,7 @@ from faro.core.data_structures import (
     FovState,
     FrameWaitCancelled,
     ImgType,
+    RTMEvent,
     StimMode,
     WaitEvent,
 )
@@ -30,7 +31,7 @@ from dataclasses import dataclass
 from typing import Iterator, Literal
 from faro.core._useq_compat import SLMImage
 from psygnal import Signal
-from useq import MDAEvent
+from useq import HardwareAutofocus, MDAEvent
 from queue import Queue, Empty as QueueEmpty, Full as QueueFull
 import numpy as np
 import time
@@ -47,6 +48,25 @@ KEEP_ERRORS_PER_KIND = 50
 
 
 BackgroundErrorSource = Literal["storage", "deferred", "pipeline", "stim_mask"]
+
+
+def _autofocus_event(rtm_event: RTMEvent) -> MDAEvent:
+    """Return a hardware autofocus event at the position of ``rtm_event``.
+
+    The pymmcore-plus engine moves the stage to the event's position and
+    runs ``fullFocus`` on the Core autofocus device. It keeps the Z change
+    per position index and applies it to the next Z moves at that position.
+    It skips the autofocus with a warning if no autofocus device is set.
+    The event gives no frame.
+    """
+    return MDAEvent(
+        index={"t": rtm_event.index.get("t", 0), "p": rtm_event.index.get("p", 0)},
+        x_pos=rtm_event.x_pos,
+        y_pos=rtm_event.y_pos,
+        z_pos=rtm_event.z_pos,
+        min_start_time=rtm_event.min_start_time,
+        action=HardwareAutofocus(),
+    )
 
 
 def _join_ref_frame(ref: np.ndarray, n_ref: int, read_imaging) -> np.ndarray:
@@ -1619,6 +1639,10 @@ class Controller:
         because an exception raised here would otherwise kill the MDA
         thread with a bare traceback.
         """
+        use_autofocus = bool(getattr(self._mic, "USE_AUTOFOCUS_EVENT", False))
+        # XY of the last autofocus. A sentinel, so the first event of the
+        # run always gets one, even without a stage position.
+        last_af_xy: object = object()
         try:
             while True:
                 if handle.cancel_event.is_set():
@@ -1685,6 +1709,13 @@ class Controller:
                     resolve_power=self._mic.resolve_power,
                     suppress_stim=suppress_stim,
                 )
+                # Autofocus before all events of this (t, p), stim included
+                # (in "previous" mode the stim comes first).
+                xy = (rtm_event.x_pos, rtm_event.y_pos)
+                if use_autofocus and planned and xy != last_af_xy:
+                    last_af_xy = xy
+                    yield _autofocus_event(rtm_event)
+
                 slm = None
                 for ev in planned:
                     if ev.metadata.get("img_type") == ImgType.IMG_STIM:
