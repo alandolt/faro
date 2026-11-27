@@ -644,6 +644,94 @@ def _replace_illumination_widget(mic) -> None:
         DOCK_WIDGETS[key] = (factory, DOCK_WIDGETS[key][1])
 
 
+def _hide_mda_autofocus(wdg) -> None:
+    """Hide the hardware autofocus settings of an MDA widget and keep them off.
+
+    The axes ("Use Hardware Autofocus on") and the per-position AF check box
+    are unticked whenever something ticks them: loading a saved sequence,
+    or the widget itself. So the sequence never gets an autofocus plan.
+    """
+    axis = wdg.af_axis
+    per_pos = wdg.stage_positions.af_per_position
+
+    def axis_off(*_) -> None:
+        if axis.value():
+            axis.setValue(())
+
+    def per_pos_off(checked: bool = True) -> None:
+        if checked:
+            per_pos.setChecked(False)
+
+    axis.valueChanged.connect(axis_off)
+    per_pos.toggled.connect(per_pos_off)
+    axis_off()
+    per_pos_off(per_pos.isChecked())
+    axis.hide()
+    per_pos.hide()
+
+    # Leaving the HCS mode shows the per-position check box again.
+    positions = wdg.stage_positions
+    set_editable = positions._set_position_table_editable
+
+    def set_editable_hidden(state: bool) -> None:
+        set_editable(state)
+        per_pos.hide()
+
+    positions._set_position_table_editable = set_editable_hidden
+
+
+def _mda_dock_factory(mic):
+    """Wrap the MDA dock factory with the scope's MDA widget settings.
+
+    Returns None when the scope changes nothing (``HIDE_AUTOFOCUS``
+    False, ``NAPARI_INCLUDE_Z_TEXT`` None).
+    """
+    from napari_micromanager._gui_objects._toolbar import DOCK_WIDGETS
+
+    hide_af = getattr(mic, "HIDE_AUTOFOCUS", False)
+    include_z_text = getattr(mic, "NAPARI_INCLUDE_Z_TEXT", None)
+    if not hide_af and include_z_text is None:
+        return None
+    # The plugin's own class, also when an earlier call (a re-run notebook
+    # cell) already put a wrapper in DOCK_WIDGETS.
+    base = _mda_base_class(DOCK_WIDGETS["MDA"][0])
+
+    def factory(*, parent=None, mmcore=None):
+        wdg = base(parent=parent, mmcore=mmcore)
+        try:
+            if include_z_text is not None:
+                wdg.stage_positions.include_z.setText(include_z_text)
+            if hide_af:
+                _hide_mda_autofocus(wdg)
+        except AttributeError:
+            logger.warning(
+                "MDA widget has no af_axis/stage_positions; settings not applied.",
+                exc_info=True,
+            )
+        return wdg
+
+    factory._faro_base = base
+    return factory
+
+
+def _mda_base_class(entry):
+    return getattr(entry, "_faro_base", entry)
+
+
+def _replace_mda_widget(mic) -> None:
+    """Apply the scope's MDA widget settings to the "MDA" dock.
+
+    Like ``_add_pertzlab_widgets``, this must run before ``MainWindow`` is
+    created.
+    """
+    from napari_micromanager._gui_objects._toolbar import DOCK_WIDGETS
+
+    factory = _mda_dock_factory(mic)
+    if factory is None:
+        factory = _mda_base_class(DOCK_WIDGETS["MDA"][0])
+    DOCK_WIDGETS["MDA"] = (factory, DOCK_WIDGETS["MDA"][1])
+
+
 FARO_ICON = Path(__file__).parent / "resources" / "faro_icon.png"
 
 
@@ -689,6 +777,8 @@ def open_napari(mic, viewer=None):
     Compared with ``MainWindow(viewer, mmcore=mic.mmc)``, this also:
 
     - fills the "Illumination Control" dock from ``mic.NAPARI_CONTROLS``;
+    - applies ``mic.HIDE_AUTOFOCUS`` and ``mic.NAPARI_INCLUDE_Z_TEXT``
+      to the MDA dock;
     - adds the toolbar buttons of ``mic.NAPARI_WIDGETS`` (pertzlab build of
       pymmcore-widgets);
     - runs the widgets' core-event slots on the GUI thread (psygnal backend);
@@ -726,6 +816,7 @@ def open_napari(mic, viewer=None):
         )
     _add_pertzlab_widgets(mic)
     _replace_illumination_widget(mic)
+    _replace_mda_widget(mic)
     if viewer is None:
         viewer = napari.Viewer()
     win = MainWindow(viewer, mmcore=mic.mmc)
