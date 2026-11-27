@@ -20,6 +20,7 @@ from faro.microscope.pymmcore import (
     ConfigGroupControl,
     ContinuousFocusControl,
     DeviceControl,
+    PropertyToggle,
 )
 from faro.napari_launcher import _illumination_dock_factory, _resolve_controls
 
@@ -76,6 +77,7 @@ def test_controls_resolve_in_order():
             ContinuousFocusControl(),
             ConfigGroupControl("Binning", label="Bin"),
             ContinuousFocusControl("PFS"),
+            PropertyToggle("LED", "L.15 Intensity", 50, "LED on"),
         ],
     )
     assert rows == [
@@ -87,6 +89,7 @@ def test_controls_resolve_in_order():
         ("focus", "PFS", "Continuous focus"),
         ("group", "Binning", "Bin"),
         ("focus", "PFS", "PFS"),
+        ("toggle", ("LED", "L.15 Intensity", 50, 0), "LED on"),
     ]
 
 
@@ -101,11 +104,14 @@ def test_missing_controls_are_skipped_with_a_warning(caplog):
                 DeviceControl("NoSuchDevice"),
                 ("Nope", "X"),
                 ("Camera", "NoSuchProperty"),
+                PropertyToggle("Nope", "X", 1, "x"),
+                PropertyToggle("Camera", "NoSuchProperty", 1, "x"),
+                PropertyToggle("LED", "L.15", 1, "prefix only"),
                 42,
             ],
         )
     assert rows == []
-    assert len(caplog.records) == 7
+    assert len(caplog.records) == 10
 
 
 def test_no_controls_keep_upstream_widget():
@@ -131,6 +137,7 @@ _WIDGET_SCRIPT = textwrap.dedent(
         ConfigGroupControl,
         ContinuousFocusControl,
         DeviceControl,
+        PropertyToggle,
     )
     from faro.napari_launcher import _illumination_dock_factory
 
@@ -160,6 +167,7 @@ _WIDGET_SCRIPT = textwrap.dedent(
         NAPARI_CONTROLS = [
             "Light",
             ("Camera", "Gain", "Gain"),
+            PropertyToggle("Camera", "Gain", 3, "Gain on"),
             "Camera",
             ConfigGroupControl("Camera", label="Camera mode"),
             ContinuousFocusControl("Autofocus"),
@@ -185,7 +193,29 @@ _WIDGET_SCRIPT = textwrap.dedent(
     # Gain, Binning, and one per writable Dichroic property.
     assert len(widget.findChildren(PropertyWidget)) == 2 + len(writable)
 
-    box = widget.findChildren(QCheckBox)[0]
+    boxes = {b.text(): b for b in widget.findChildren(QCheckBox)}
+    gain = boxes["Gain on"]
+    # The demo camera starts at Gain 0 (off), so the first tick sets on_value.
+    core.setProperty("Camera", "Gain", 0)
+    assert not gain.isChecked()
+    gain.setChecked(True)
+    assert core.getProperty("Camera", "Gain") == "3"
+    # Changed while on (e.g. with the slider): the box stays ticked and
+    # remembers the value for the next tick.
+    core.setProperty("Camera", "Gain", 5)
+    assert gain.isChecked()
+    gain.setChecked(False)
+    assert core.getProperty("Camera", "Gain") == "0"
+    gain.setChecked(True)
+    assert core.getProperty("Camera", "Gain") == "5"
+    # A slider dragged down to off passes small values; they are not kept.
+    for value in (4, 3, 2, 1, 0):
+        core.setProperty("Camera", "Gain", value)
+    assert not gain.isChecked()
+    gain.setChecked(True)
+    assert core.getProperty("Camera", "Gain") == "5"
+
+    box = boxes["on"]
     core.enableContinuousFocus(False)
     box.setChecked(True)
     assert core.isContinuousFocusEnabled()
