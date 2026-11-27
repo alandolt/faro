@@ -353,3 +353,86 @@ def test_mda_handler_slots_run_on_main_thread_in_order():
     assert calls == []
     emit_queued()
     assert calls == [("started", True), ("frame", True), ("finished", True)]
+
+
+_MDA_SCRIPT = textwrap.dedent(
+    """
+    from pymmcore_plus import CMMCorePlus
+    from qtpy.QtWidgets import QApplication
+    import useq
+
+    app = QApplication([])
+    core = CMMCorePlus()
+    core.loadSystemConfiguration()
+
+    from napari_micromanager._gui_objects._toolbar import DOCK_WIDGETS
+
+    from faro.napari_launcher import _replace_mda_widget
+
+    base = DOCK_WIDGETS["MDA"][0]
+
+    class Scope:
+        HIDE_AUTOFOCUS = True
+        NAPARI_INCLUDE_Z_TEXT = "Include Z (uncheck if AF is on)"
+
+    # A second call (a re-run notebook cell) must not wrap the wrapper.
+    _replace_mda_widget(Scope)
+    _replace_mda_widget(Scope)
+    assert DOCK_WIDGETS["MDA"][0]._faro_base is base
+
+    w = DOCK_WIDGETS["MDA"][0](parent=None, mmcore=core)
+    w.show()
+    app.processEvents()
+    pos = w.stage_positions
+    assert pos.include_z.text() == Scope.NAPARI_INCLUDE_Z_TEXT
+    assert not w.af_axis.isVisible()
+    assert not pos.af_per_position.isVisible()
+
+    w.af_axis.use_af_p.setChecked(True)
+    pos.af_per_position.setChecked(True)
+    assert w.af_axis.value() == ()
+    assert not pos.af_per_position.isChecked()
+
+    af = useq.AxesBasedAF(
+        autofocus_device_name="Autofocus", autofocus_motor_offset=1, axes=("t", "p")
+    )
+    seq = useq.MDASequence(
+        stage_positions=[(0, 0, 0)],
+        time_plan={"interval": 1, "loops": 2},
+        autofocus_plan=af,
+    )
+    w.setValue(seq)
+    app.processEvents()
+    assert w.value().autofocus_plan is None
+
+    # Leaving the HCS mode shows the per-position box again upstream.
+    pos._set_position_table_editable(False)
+    pos._set_position_table_editable(True)
+    app.processEvents()
+    assert not pos.af_per_position.isVisible()
+
+    class Plain:
+        pass
+
+    _replace_mda_widget(Plain)
+    assert DOCK_WIDGETS["MDA"][0] is base
+    print("OK")
+    """
+)
+
+
+def test_mda_widget_hides_autofocus():
+    pytest.importorskip("napari_micromanager")
+    from pymmcore_plus import find_micromanager
+
+    if not find_micromanager():
+        pytest.skip("Micro-Manager (demo config) is not installed")
+    result = subprocess.run(
+        [sys.executable, "-c", _MDA_SCRIPT],
+        cwd=REPO,
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0 and "OK" in result.stdout, result.stderr

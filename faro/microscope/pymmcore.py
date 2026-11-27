@@ -115,6 +115,14 @@ class PyMMCoreMicroscope(AbstractMicroscope):
     # scope, by label, e.g. ``["Stage Map"]``. None adds all of them, ``[]``
     # none. Without the pertzlab build there are no such buttons either way.
     NAPARI_WIDGETS: list[str] | None = None
+    # True hides the hardware autofocus settings of the faro-napari MDA
+    # widget ("Use Hardware Autofocus on" axes and the per-position AF
+    # offset) and keeps them off. For scopes that keep continuous focus on
+    # for the whole run instead (e.g. the Olympus ZDC).
+    HIDE_AUTOFOCUS: bool = False
+    # Text of the "Include Z" check box of the MDA position list, e.g.
+    # "Include Z (uncheck if AF is on)". None keeps the default text.
+    NAPARI_INCLUDE_Z_TEXT: str | None = None
 
     def micromanager_dir(self, path: str | None = None) -> str:
         """The Micro-Manager folder to use, in this order:
