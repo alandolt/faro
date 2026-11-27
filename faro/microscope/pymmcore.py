@@ -45,6 +45,26 @@ class DeviceControl:
     include_read_only: bool = False
 
 
+@dataclass(frozen=True)
+class PropertyToggle:
+    """A check box in ``faro-napari`` that switches one property on and off.
+
+    For ``PyMMCoreMicroscope.NAPARI_CONTROLS``, e.g.
+    ``PropertyToggle("TransmittedIllumination 2", "Brightness", 120, "Lamp on")``.
+    Unticking it remembers the property's value (changed with a slider, for
+    example) and sets ``off_value``. Ticking it sets the remembered value, or
+    ``on_value`` if there is none yet. It is ticked while the property is not
+    at ``off_value``, so it follows changes made elsewhere. The property name
+    must match exactly (no prefix match, since the check box writes).
+    """
+
+    device: str
+    property: str
+    on_value: str | int | float
+    label: str
+    off_value: str | int | float = 0
+
+
 class PyMMCoreMicroscope(AbstractMicroscope):
     """Intermediate base for all pymmcore-plus-based microscopes.
 
@@ -79,6 +99,10 @@ class PyMMCoreMicroscope(AbstractMicroscope):
     #   ConfigGroupControl("Binning")     -- a preset dropdown for a config group
     #   ContinuousFocusControl("PFS")     -- autofocus on/off with locked state
     #   DeviceControl("Camera")           -- every property of one device
+    #   PropertyToggle(device, property, on_value, label)
+    #                                     -- a check box: unticked sets
+    #                                        off_value (0), ticked the value
+    #                                        at the last untick, else on_value
     # A property name matches exactly, else as the prefix of a property (for
     # names an adapter builds at runtime). Missing devices, properties, groups
     # or autofocus are skipped with a warning. A ``_pfs_lock`` attribute on the

@@ -844,12 +844,14 @@ shows, top to bottom. Without it, the dock shows napari-micromanager's default
 | `ConfigGroupControl("Binning")` | a preset dropdown for a config group |
 | `ContinuousFocusControl("PFS")` | continuous (hardware) autofocus on/off, with the locked state |
 | `DeviceControl("Camera")` | every property of one device (`include_read_only=True` adds the read-only ones) |
+| `PropertyToggle(device, property, on_value, label)` | a check box that switches one property, e.g. a lamp: unticked sets `off_value` (default 0), ticked the value it had at the last untick (first time: `on_value`) |
 
 ```python
 from faro.microscope.pymmcore import (
     ConfigGroupControl,
     ContinuousFocusControl,
     DeviceControl,
+    PropertyToggle,
 )
 
 class MyScope(PyMMCoreMicroscope):
@@ -857,6 +859,7 @@ class MyScope(PyMMCoreMicroscope):
         "Light",
         ("LED1 Device", "L.15 Intensity", "LedEpi"),
         ("DiaLamp", "Intensity", "DiaLamp"),
+        PropertyToggle("DiaLamp", "Intensity", 50, "DiaLamp on"),
         "Camera",
         ConfigGroupControl("Binning"),
         ("Camera", "Gain", "Gain"),
@@ -867,8 +870,9 @@ class MyScope(PyMMCoreMicroscope):
 
 A property name matches exactly, else as the prefix of a property (for names
 an adapter builds at runtime). Missing devices, properties, groups or
-autofocus devices are skipped with a warning. If the scope has a `_pfs_lock`,
-the focus toggle holds it for every autofocus access.
+autofocus devices are skipped with a warning. A `PropertyToggle` writes, so
+its property name must match exactly. If the scope has a `_pfs_lock`, the
+focus toggle holds it for every autofocus access.
 
 With the pertzlab build of pymmcore-widgets (`uv sync --extra pertzlab-widgets`),
 `faro-napari` adds toolbar buttons for its widgets (`PERTZLAB_WIDGETS` in

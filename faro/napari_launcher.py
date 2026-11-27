@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import logging
 import time
 from collections.abc import Sequence
@@ -313,20 +314,23 @@ def _deliver_mda_handler_on_main_thread(win) -> None:
         signal.connect(slot, thread="main")
 
 
-def _resolve_property(core, loaded, device, name, label):
+def _resolve_property(core, loaded, device, name, label, exact=False):
     """Return ``(device, property, label)`` for one property entry, or None.
 
-    A name matches a property exactly, else as the prefix of one (for names
-    an adapter builds at runtime). Without a label, ``device::property`` is
+    A name matches a property exactly, else (unless ``exact``) as the prefix
+    of one (for names an adapter builds at runtime). Without a label, ``device::property`` is
     shown. An unloaded device or an unmatched name is skipped with a warning.
     """
     if device not in loaded:
         logger.warning("NAPARI_CONTROLS: device %r is not loaded.", device)
         return None
     props = core.getDevicePropertyNames(device)
-    match = (
-        name if name in props else next((p for p in props if p.startswith(name)), None)
-    )
+    if name in props:
+        match = name
+    elif exact:
+        match = None
+    else:
+        match = next((p for p in props if p.startswith(name)), None)
     if match is None:
         logger.warning(
             "NAPARI_CONTROLS: %r has no property %r. Properties: %s",
@@ -347,7 +351,8 @@ def _resolve_controls(core, entries) -> list[tuple[str, Any, str]]:
     - ``"property"``: target ``(device, property)``;
     - ``"group"``: target the config group;
     - ``"focus"``: target the autofocus device;
-    - ``"device"``: target the ``DeviceControl``, label the device.
+    - ``"device"``: target the ``DeviceControl``, label the device;
+    - ``"toggle"``: target ``(device, property, on_value, off_value)``.
 
     A missing device, property, group (or a group without presets), a missing
     autofocus device or an unknown entry is skipped with a warning.
@@ -356,6 +361,7 @@ def _resolve_controls(core, entries) -> list[tuple[str, Any, str]]:
         ConfigGroupControl,
         ContinuousFocusControl,
         DeviceControl,
+        PropertyToggle,
     )
 
     loaded = set(core.getLoadedDevices())
@@ -391,6 +397,16 @@ def _resolve_controls(core, entries) -> list[tuple[str, Any, str]]:
                 )
             else:
                 rows.append(("device", entry, entry.device))
+        elif isinstance(entry, PropertyToggle):
+            # Exact only: the check box writes, so a prefix must not pick
+            # another property.
+            prop = _resolve_property(
+                core, loaded, entry.device, entry.property, entry.label, exact=True
+            )
+            if prop is not None:
+                rows.append(
+                    ("toggle", (*prop[:2], entry.on_value, entry.off_value), prop[2])
+                )
         elif isinstance(entry, (tuple, list)) and len(entry) in (2, 3):
             device, name, *rest = entry
             prop = _resolve_property(
@@ -461,6 +477,81 @@ def _continuous_focus_toggle(mmcore, lock=None, parent=None):
     return widget
 
 
+def _same_value(a, b) -> bool:
+    """Whether two property values are equal, as numbers when both are."""
+    try:
+        return float(a) == float(b)
+    except (TypeError, ValueError):
+        return str(a) == str(b)
+
+
+def _property_toggle(mmcore, device, prop, on_value, off_value, label):
+    """A check box that switches ``device::prop`` between on and ``off_value``.
+
+    Unticking remembers the property's value and sets ``off_value``; ticking
+    sets the remembered value, or ``on_value`` if there is none (or the
+    property's value when the box is built, if on). Only an untick remembers:
+    a slider dragged down to off passes small values that must not be kept.
+    The box is ticked while the property is not at ``off_value`` and follows
+    changes made elsewhere. A failed set is logged and the box goes back to
+    the property's value.
+    """
+    from qtpy.QtWidgets import QCheckBox
+    from superqt.utils import ensure_main_thread
+
+    box = QCheckBox(label)
+    box.setToolTip(
+        f"{device}::{prop}: off {off_value}; on the last value, first {on_value}"
+    )
+    last_on = [on_value]
+
+    def read():
+        try:
+            return mmcore.getProperty(device, prop)
+        except Exception:
+            logger.exception("Could not read %s::%s.", device, prop)
+            return None
+
+    def remember(value) -> None:
+        if value is not None and not _same_value(value, off_value):
+            last_on[0] = value
+
+    def sync(value=None) -> None:
+        if value is None:
+            value = read()
+            if value is None:
+                return
+        box.blockSignals(True)
+        box.setChecked(not _same_value(value, off_value))
+        box.blockSignals(False)
+
+    def set_on(on: bool) -> None:
+        if not on:
+            remember(read())
+        value = last_on[0] if on else off_value
+        try:
+            mmcore.setProperty(device, prop, value)
+        except Exception:
+            logger.exception("Could not set %s::%s to %r.", device, prop, value)
+            sync()
+
+    @ensure_main_thread
+    def on_core_changed(dev, name, value) -> None:
+        if dev == device and name == prop:
+            with contextlib.suppress(RuntimeError):  # box already deleted
+                sync(value)
+
+    box.toggled.connect(set_on)
+    mmcore.events.propertyChanged.connect(on_core_changed)
+    box.destroyed.connect(
+        lambda *_: mmcore.events.propertyChanged.disconnect(on_core_changed)
+    )
+    value = read()
+    remember(value)
+    sync(value)
+    return box
+
+
 def _illumination_dock_factory(mic):
     """Return the "Illumination Control" widget class for ``mic``, or None.
 
@@ -499,6 +590,11 @@ def _illumination_dock_factory(mic):
             for row, (kind, target, label) in enumerate(
                 _resolve_controls(self._mmc, self._wanted)
             ):
+                if kind == "toggle":
+                    # In the value column, under the property it switches.
+                    box = _property_toggle(self._mmc, *target, label)
+                    layout.addWidget(box, row, 1)
+                    continue
                 name = QLabel(label)
                 if kind == "heading":
                     font = QFont(name.font())
